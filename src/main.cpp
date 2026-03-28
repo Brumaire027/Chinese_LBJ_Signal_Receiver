@@ -34,13 +34,15 @@
 #include "coredump.h"
 #include "customfont.h"
 #include <esp_task_wdt.h>
+
+#define WM_STRINGS_FILE "wm_strings_zh.h"
 #include <WiFiManager.h>
 
 //引入U8G2文字库
 extern const uint8_t u8g2_font_wqy15_t_custom[];
 
 // 添加蜂鸣器定义
-#define BUZZER_PIN 25  // 蜂鸣器正极接 GPIO 25
+#define BUZZER_PIN 25  // 蜂鸣器引脚 GPIO 25
 uint32_t last_signal_time = 0; // 上次收到信号的时间
 bool signal_active = false;    // 信号是否处于活跃状态
 
@@ -246,7 +248,8 @@ void updateInfo() {
             u8g2->setDrawColor(1); // 用白色写字
             u8g2->drawFrame(20, 20, 88, 24); // 画个框
             u8g2->setFont(u8g2_font_wqy12_t_gb2312);
-            u8g2->drawStr(35, 38, "电量不足!");
+            u8g2->setCursor(35, 38);
+            u8g2->print("电量不足!");
             u8g2->sendBuffer();
             delay(2000); // 暂停2秒让你看到
         }
@@ -254,9 +257,9 @@ void updateInfo() {
         // 蜂鸣器低压报警
         for(int i=0; i<3; i++){
             digitalWrite(BUZZER_PIN, HIGH);
-            delay(100);
+            delay(300);
             digitalWrite(BUZZER_PIN, LOW);
-            delay(100);
+            delay(300);
         }
 
         low_volt_warned = true; // 锁定，防止一直叫唤
@@ -265,7 +268,13 @@ void updateInfo() {
     if (voltage < 3.10) {
         Serial.println("Critical Voltage! System Halted.");
         u8g2->clearBuffer();
-        u8g2->drawStr(30, 40, "电量耗尽!");
+        u8g2->setDrawColor(0); // 用黑色背景擦除一块区域
+        u8g2->drawBox(20, 20, 88, 24);
+        u8g2->setDrawColor(1); // 用白色写字
+        u8g2->drawFrame(20, 20, 88, 24); // 画个框
+        u8g2->setFont(u8g2_font_wqy12_t_gb2312);
+        u8g2->setCursor(35, 38);
+        u8g2->print("电量耗尽!");
         u8g2->sendBuffer();
         
         sd1.end(); // 安全卸载 SD 卡
@@ -744,6 +753,8 @@ SmatPhone注释结束 */
     // WiFi热点配网
     // 1. 设置为非阻塞模式 (关键!)
     wm.setConfigPortalBlocking(false);
+    wm.setClass("invert"); // 启用深色模式
+    wm.setTitle("LBJ-Receiver"); // 设置网页顶部的标题
     
     // 2. 设置超时 (5分钟)
     wm.setConfigPortalTimeout(300); 
@@ -756,7 +767,7 @@ SmatPhone注释结束 */
             u8g2->setCursor(0, 40);
             u8g2->print("WiFi 连接成功!");
             u8g2->sendBuffer();
-            delay(1000); 
+            delay(600); 
             u8g2->clearBuffer(); 
             u8g2->sendBuffer();
         }
@@ -775,11 +786,11 @@ SmatPhone注释结束 */
             u8g2->setFont(u8g2_font_wqy12_t_gb2312); // 确保用中文全字体
             u8g2->setCursor(0, 15);
             u8g2->print("WiFi连接失败");
-            u8g2->setCursor(0, 32);
+            u8g2->setCursor(0, 30);
             u8g2->print("请连接热点:");
-            u8g2->setCursor(0, 48);
+            u8g2->setCursor(0, 46);
             u8g2->print("LBJ-Receiver");
-            u8g2->setCursor(0, 64);
+            u8g2->setCursor(0, 62);
             u8g2->print("并访问 192.168.4.1");
             u8g2->sendBuffer();
         }
@@ -810,11 +821,13 @@ SmatPhone注释结束 */
     sd1.append("启动用时 %llu ms\n", millis64() - runtime_timer);
     runtime_timer = 0;
 
-    if (u8g2) {
+    if (u8g2 && !wifi_msg_shown) {
         u8g2->setDrawColor(0);
         u8g2->drawBox(0, 42, 128, 14);
         u8g2->setDrawColor(1);
-        u8g2->drawStr(0, 52, "Listening LBJ Signal...");
+        u8g2->setFont(u8g2_font_wqy12_t_gb2312);
+        u8g2->setCursor(0, 52);
+        u8g2->print("等待LBJ信号中...");
         u8g2->sendBuffer();
         Serial.printf("Mem left: %d Bytes\n", esp_get_free_heap_size());
     }
@@ -920,8 +933,7 @@ void checkNetwork() {
 
 // LOOP
 void loop() {
-
-    // --- [新增] WiFiManager 后台处理 ---
+    //WiFiManager 后台处理
     if (is_ap_active) {
         wm.process(); // 处理网页请求
 
@@ -934,8 +946,8 @@ void loop() {
             if (u8g2) {
                 u8g2->clearBuffer();
                 u8g2->setFont(u8g2_font_wqy12_t_gb2312);
-                u8g2->setCursor(0, 40);
-                u8g2->print("等待 LBJ 信号..."); 
+                u8g2->setCursor(0, 52);
+                u8g2->print("等待LBJ信号中..."); 
                 u8g2->sendBuffer();
             }
         }
@@ -1021,7 +1033,7 @@ void loop() {
     handleTelnetCall();
 
     if (millis64() > 60000 && format_task_timer == 0 &&
-        !exec_init_f80) // lower down frequency 60 sec after startup and idle.
+        !exec_init_f80 && !is_ap_active) // lower down frequency 60 sec after startup and idle.
     {
         if (isConnected())
             setCpuFrequencyMhz(80);
@@ -1238,19 +1250,17 @@ void loop() {
         }
     }
 
-    // [新增] 蜂鸣器控制逻辑
+    // 蜂鸣器控制逻辑
     
-    // 1. 判断信号是否超时 (例如：超过 3000ms/3秒 没收到新信号，就认为车走了)
-    // 注意：这里用 millis() 而不是 millis64()，因为 buzzer 用的是 uint32_t
+    // 判断信号是否超时 (超过 3000ms没收到新信号则认为车已离开)
     if (millis() - last_signal_time > 3000) {
         signal_active = false;
         digitalWrite(BUZZER_PIN, LOW); // 彻底关闭
     }
     
-    // 2. 如果信号活跃，制造 "嘀-嘀-嘀" 的节奏
+    // 如果信号活跃，制造 嘀嘀嘀 的节奏
     if (signal_active) {
-        // 利用取余运算实现节奏：1000ms 一个周期
-        // 前 500ms 响 (HIGH)，后 500ms 停 (LOW) -> 听起来就是短促的 嘀...嘀...
+        // 利用取余运算实现节奏，1000ms一个周期
         int rhythm = millis() % 1000; 
         if (rhythm < 500) { 
             digitalWrite(BUZZER_PIN, HIGH); // 响

@@ -5,14 +5,12 @@
 
 #include "boards.hpp"
 
-// === 1. 全局变量实例化 ===
-
 // 显示屏对象
 #ifdef HAS_DISPLAY
     DISPLAY_MODEL *u8g2 = nullptr;
 #endif
 
-// 电池与电压 (DIY板通常没有分压电路，给个模拟值)
+// 电池与电压
 ESP32AnalogRead battery;
 float voltage = 4.20; 
 
@@ -22,7 +20,7 @@ float voltage = 4.20;
     bool have_sd = false;
 #endif
 
-// RTC 对象 (必须与 hpp 中的类型一致)
+// RTC 对象
 #ifdef HAS_RTC
     RTC_DS1307 rtc; 
 #endif
@@ -107,8 +105,6 @@ void initBoard() {
     #endif
     
     // --- 电池虚拟初始化 ---
-    // 防止 main.cpp 调用 battery.readVoltage() 时崩溃
-    // 随意绑定一个未使用的引脚
     #ifdef ADC_PIN
         battery.attach(ADC_PIN);
     #endif

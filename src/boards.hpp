@@ -27,10 +27,10 @@ extern bool have_sd;
 extern DISPLAY_MODEL *u8g2;
 #endif
 
-// === RTC 时钟部分 (关键修改) ===
+// === RTC 时钟部分===
 #ifdef HAS_RTC
 #include <RTClib.h>
-// [修改] 将原版的 RTC_DS3231 改为你的 RTC_DS1307
+// RTC_DS1307
 extern RTC_DS1307 rtc;
 #endif
 
@@ -38,7 +38,7 @@ extern RTC_DS1307 rtc;
 #define OLED_WIRE_PORT Wire
 #endif
 
-// === 电源管理 (PMU) 部分 [修改] ===
+// === 电源管理 (PMU) 部分===
 // DIY 板子没有 PMU，为了防止 main.cpp 报错，我们定义空宏
 #define initPMU()
 #define disablePeripherals()
