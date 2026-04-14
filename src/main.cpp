@@ -27,6 +27,14 @@
    For full API reference, see the GitHub Pages
    https://jgromes.github.io/RadioLib/
 */
+/*
+   Chinses Railway LBJ Signal Reciver Create by Brumaire_027 & Gemini in Jan 2026
+   Used ESP32 + SX1276 Model
+   Thanks for FLN1021's Original Program & JLC
+*/
+
+//Program Start
+
 #pragma execution_character_set("utf-8")
 
 // include libraries
@@ -636,12 +644,15 @@ void setup() {
     configTzTime(time_zone, ntpServer1, ntpServer2);
 
 #ifdef HAS_RTC
-    // rtc.begin();
-    // rtc.getDateTime(time_info);
-    time_info = rtcLibtoC(rtc.now());
-    Serial.println(&time_info, "[eRTC] RTC Time %Y-%m-%d %H:%M:%S ");
-    timeSync(time_info); // sync system time from rtc
-    Serial.printf("SYS Time %s\n", fmtime(time_info));
+    if (rtc.begin()) { //先判断RTC硬件是否存在且就绪
+        time_info = rtcLibtoC(rtc.now());
+        Serial.println(&time_info, "[eRTC] RTC Time %Y-%m-%d %H:%M:%S ");
+        timeSync(time_info); // sync system time from rtc
+        Serial.printf("SYS Time %s\n", fmtime(time_info));
+    } else {
+        // 若硬件接触不良或未搭载，打印警告，不强行同步错误时间
+        Serial.println("[eRTC] ERROR: RTC Hardware not found! Skipped.");
+    }
 #endif
 
     Serial.printf("RST: %s\n", printResetReason(reset_reason).c_str());
@@ -751,15 +762,12 @@ void setup() {
 SmatPhone注释结束 */
 
     // WiFi热点配网
-    // 1. 设置为非阻塞模式 (关键!)
+    // 设置为非阻塞模式
     wm.setConfigPortalBlocking(false);
     wm.setClass("invert"); // 启用深色模式
     wm.setTitle("LBJ-Receiver"); // 设置网页顶部的标题
-    
-    // 2. 设置超时 (5分钟)
-    wm.setConfigPortalTimeout(300); 
 
-    // 3. 尝试自动连接
+    // 尝试自动连接
     if (wm.autoConnect("LBJ-Receiver")) {
         Serial.println("WiFi 连接成功 (Saved Creds)");
         if (u8g2) {
@@ -935,7 +943,9 @@ void checkNetwork() {
 void loop() {
     //WiFiManager 后台处理
     if (is_ap_active) {
-        wm.process(); // 处理网页请求
+        if (wm.getConfigPortalActive()) {
+        wm.process();
+        }
 
         unsigned long current_time = millis();
 
@@ -959,7 +969,7 @@ void loop() {
             is_ap_active = false;  
         }
         
-        // 如果用户悄悄配好网了
+        // 若用户配好网
         if (WiFi.status() == WL_CONNECTED) {
             wm.stopConfigPortal();
             is_ap_active = false;
@@ -1251,7 +1261,6 @@ void loop() {
     }
 
     // 蜂鸣器控制逻辑
-    
     // 判断信号是否超时 (超过 3000ms没收到新信号则认为车已离开)
     if (millis() - last_signal_time > 3000) {
         signal_active = false;
