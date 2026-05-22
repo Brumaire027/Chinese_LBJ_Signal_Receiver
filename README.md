@@ -1,139 +1,138 @@
-# SX1276_Receive_LBJ
-A LBJ Message Receiver Based on TTGO LoRa 32 v1.6.1 (ESP32 + SX1276 868MHz)
+# Chinese LBJ Signal Receiver
 
-The SX1276_Receive_LBJ project is modified from [RadioLib](https://github.com/jgromes/RadioLib)'s Pager_Receive.ino and 
-[LilyGo-LoRa-Series](https://github.com/Xinyuan-LilyGO/LilyGo-LoRa-Series)'s templates,
-based on the TTGO LoRa 32 v1.6.1 dev board.
-This project aims to provide an alternative solution to the expensive programmable 
-pagers commonly used in receiving the Chinese Railway Train Proximity Alarm
-(aka LBJ, on 821.2375MHz following POCSAG protocol) messages often transmitted 
-by on board LBJ systems through CIR.
+A DIY ESP32 + SX1276 based receiver for Chinese Railway LBJ / POCSAG messages.
 
-## Notice
-This is an experimental project to learn embedded device programming and sub-GHz signal
-receives, thus have bad coding quality and may have unknown issues. Use it at your own risk.
+This project is modified from FLN1021's original `SX1276_Receive_LBJ` project. The original repository is no longer publicly available, but a public mirror can be found here:
+
+https://github.com/sliverwolf233/SX1276_Receive_LBJ
+
+The original project was designed for the TTGO LoRa 32 v1.6.1 board. This repository adapts the receiver to a generic ESP32 development board with an external SX1276 LoRa module, and adds several hardware and usability changes.
+
+
+## What It Does
+
+This project receives LBJ-related POCSAG messages around **821.2375 MHz** using an SX1276 radio module in FSK direct mode.
+
+Currently supported functions include:
+
+- Receiving and decoding LBJ / POCSAG messages
+- Displaying decoded information on an OLED screen
+- Saving received messages to SD card logs
+- Outputting decoded messages through serial
+- Optional Telnet output over WiFi
+- Basic buzzer alert support
+
+Decoded information may include train number, direction, speed, kilometer post, locomotive number, route name, and position data, depending on the received message type and signal quality.
+
 
 ## Hardware
-Based on [TTGO LoRa 32 v1.6.1 dev board](https://www.lilygo.cc/products/lora3), utilizes SX1276's FSK modem to 
-receive LBJ messages.
-The schematic of this board can be found [here](https://github.com/Xinyuan-LilyGO/LilyGo-LoRa-Series/blob/master/schematic/T3_V1.6.1.pdf).
 
-### Additional Functions
-***Note: This is optional and requires additional hardware to be connected to the board.***
+The current version is intended for a DIY setup based on:
 
-Additional functions can be enabled by connecting specific peripheral to the specified pin as following:
+- ESP32 development board
+- SX1276 LoRa module
+- SSD1306 OLED display
+- SD card module
+- Optional RTC module
+- Optional buzzer
 
-#### 1. DS3231 RTC
-Share IIC Bus with on board SSD1306 OLED.
-```c++
-#define I2C_SDA                     21
-#define I2C_SCL                     22
+Pin definitions and feature switches are mainly configured in `platformio.ini`.
+
+
+## Build
+
+This project uses PlatformIO.
+
+Build:
+
+```bash
+pio run
 ```
-Keeps time while power off. If not used, the time will be acquired from NTP server every time after reboot.
-If connected uncomment the following line in [utilities.h](src/utilities.h) while building.
-```c++
-#define HAS_RTC // soldered an external DS3231 module.
+
+Upload:
+
+```bash
+pio upload
 ```
 
-#### 2. AD Buttons (WIP)
-Due to lack of GPIO a four key analog button is used. 
-```c++
-#define BUTTON_PIN                  34
+Serial monitor:
+
+```bash
+pio device monitor
 ```
-Provides input to interactive functions including logs inspection and device settings on OLED(WIP). If connected use
-the ***button_equipped*** branch instead of master while building.
 
-More information about pin definitions can be found in [utilities.h](src/utilities.h)
+Default serial baud rate:
 
-## Features
-- Shows formatted LBJ messages on OLED display.
-- Save Received messages to TF card in plain text and CSV format.
-- Host Telnet server and send formatted messages to client.
-- BCH error correction migrated from MMDVM_HS_Hat's [BCH3121.cpp](https://github.com/phl0/POCSAG_HS/blob/master/BCH3121.cpp)
+```text
+115200
+```
 
-## Known Issues
-- Takes a very long time to startup if a large number of files are in TF card.
-- TF card hot-plug is **NOT** supported. Unplug while power on will cause crash after next message receive.
-- Unstable WiFi connection.
-- No multi-client support for Telnet service.
-- No buzzers for alert.
-- Partially decoded or corrupted message will show on display.
-- Documentation and license are preliminary, needs to clean up and complete.
 
-## Details
-### 1. About LBJ extend message
-It does not appear on `TB/T 3504-2018` standard.
-I received this kind of messages using SDR while listening to 821.2375MHz. Some train transmits them on
-POCSAG address `1234002`. The formal name and structure of these messages is unknown, the contents are currently
-identified by guessing. Current identified information in one typical LBJ extend info message is listed in the following
-table.
+## WiFi
 
-| Nibbles(4bit) | Encode  | Meaning                                                                         |
-|---------------|---------|---------------------------------------------------------------------------------|
-| 0-3           | ASCII   | Type                                                                            |
-| 4-11          | Decimal | 8 digit locomotive registry number                                              |
-| 12-13         | Unknown | Locomotive ends, 31 for A end, 32 for B end, 30 for no A/B end or unregistered. |
-| 14-29         | GB2312  | Route                                                                           |
-| 30-38         | Decimal | Longitude (XXX°XX.XXXX′ E)                                                      |
-| 39-46         | Decimal | Latitude (XX°XX.XXXX′ N)                                                        |
-| 47-49         | Unknown | Unknown, usually 000                                                            |
+This version uses WiFiManager.
 
-In total of 50 nibbles / 200 bits, transmitted in 10 POCSAG frames.
+If no saved WiFi credentials are available, the device starts a configuration access point:
 
-### 2. SX1276 Configuration
-- Freq = 821.2375MHz + 6 ppm (default)
-- Mode = FSK, RxDirect (DIO2)
-- Gain = 001 + LnaBoostHf (AGC off)
-- RxBW = 12.5 kHz
+```text
+LBJ-Receiver
+```
 
-Due to lack of TCXO on the SX1276 module used by the dev board, an automatic frequency adjustment
-mechanism is implemented by measuring the frequency error of the carrier and preamble received using SX1276's frequency
-error indicator (FEI). It tries to lock on the signal after receiving a carrier or preamble, thus compensate for the
-frequency error caused by crystal or the transmitter. This mechanism can be disabled via serial command `afc off`.
+Connect to it and open:
 
-### 3. Telnet/Serial Commands
-#### Serial
-- `ping` Serial state test command, returns pong.
-- `time` Returns system time.
-- `sd end` Unmount TF card.
-- `sd begin` Mount TF card.
-- `mem` Returns memory left. (by `esp_get_free_heap_size()`)
-- `rst` Returns reset reason.
-- `ppm read` Returns current ppm.
-- `afc off` Disable automatic frequency correction.
-- `afc on` Enable automatic frequency correction.
+```text
+http://192.168.4.1
+```
 
-#### Telnet
-- `ping` Telnet state test command, returns pong.
-- `read` Returns 1000 bytes of data from log on TF card.
-- `log read [int]` Returns `[int]` bytes of data from log on TF card.
-- `log status` Returns if TF log is enabled.
-- `afc off` Disable automatic frequency correction.
-- `afc on` Enable automatic frequency correction.
-- `ppm [float]` Set ppm to `[float]`.
-- `bat` Returns battery voltage.
-- `rssi` Returns current RSSI from SX1276 module.
-- `gain` Returns current gain of SX1276 module.
-- `time` Returns system time.
-- `bye` Disconnect from Telnet.
 
-### 4. Reception Failure
-Sometimes the received messages may be corrupt, partially decoded or wrongly corrected, thus may display unreliable results.
-If `<NUL>`, `NA`, `********` or part of these characters shows up, it means this part of the message is corrupted.
+## Notes
 
-## Libraries and codes used/referenced
-[//]: # (todo: add links)
-- [RadioLib](https://github.com/jgromes/RadioLib) (Modified)
-- [U8G2](https://github.com/olikraus/u8g2)
-- [ESP32-Arduino](https://github.com/espressif/arduino-esp32)
-- [PlatformIO](https://platformio.org/)
-- [ESP32AnalogRead](https://github.com/madhephaestus/ESP32AnalogRead.git) (for battery voltage checking)
-- BCH3121.cpp/.h from [POCSAG_HS](https://github.com/phl0/POCSAG_HS)
-- [LilyGo-LoRa-Series](https://github.com/Xinyuan-LilyGO/LilyGo-LoRa-Series)
-- [ESPTelnet](https://github.com/LennartHennigs/ESPTelnet)
-- [RTClib](https://github.com/adafruit/RTClib.git)
-- [Multimon-ng](https://github.com/EliasOenal/multimon-ng)
-- Project inspired by [GoRail_Pager](https://github.com/killeder/GoRail_Pager).
-- More if I can remember, I apologize for that.
+The project is still being cleaned up and actively modified.
 
-Huge thanks to all authors and contributors.
+Current limitations include:
+
+- Code structure still contains legacy parts from the original TTGO-based project
+- Some hardware definitions need further cleanup
+- SD card hot-plug is not supported
+- WiFi and Telnet behavior may be unstable
+- Decoded messages may be incomplete or incorrect when signal quality is poor
+- Documentation is still incomplete
+
+
+## Roadmap
+
+Planned work includes:
+
+- Cleaning up the code structure
+- Separating receiver, parser, display, network, and board support code
+- Improving hardware documentation
+- Adding new features and better device controls
+- Reviewing license compatibility and adding a proper license file
+
+
+## Credits
+
+This project is based on the work of FLN1021's `SX1276_Receive_LBJ`.
+
+Thanks to the maintainers and contributors of the following projects:
+
+- RadioLib
+- LilyGo LoRa Series
+- U8g2
+- ESP32 Arduino
+- ESP Telnet
+- RTClib
+- ESP32AnalogRead
+
+Thanks also to sliverwolf233 for preserving a public mirror of the original repository.
+
+
+## Disclaimer
+
+This project is for learning and experimentation only.
+
+Radio regulations vary by country and region. Make sure your use complies with local laws.
+
+Do not rely on this project for railway operation, dispatching, safety-related decisions, or any official use.
+
+Use it at your own risk.

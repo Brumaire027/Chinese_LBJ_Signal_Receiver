@@ -39,6 +39,7 @@
 
 // include libraries
 #include <RadioLib.h>
+#include "buzzer.hpp"
 #include "coredump.h"
 #include "customfont.h"
 #include <esp_task_wdt.h>
@@ -49,10 +50,9 @@
 //引入U8G2文字库
 extern const uint8_t u8g2_font_wqy15_t_custom[];
 
-// 添加蜂鸣器定义
-#define BUZZER_PIN 25  // 蜂鸣器引脚 GPIO 25
-uint32_t last_signal_time = 0; // 上次收到信号的时间
-bool signal_active = false;    // 信号是否处于活跃状态
+#ifndef BUZZER_PIN
+#define BUZZER_PIN 25
+#endif
 
 // configure the wifi connection
 String wifiSSID = "ABCDE";
@@ -118,6 +118,7 @@ bool have_cd = false;
 bool telnet_online = false;
 SD_LOG sd1;
 struct rx_info rxInfo;
+static struct data_bond db_storage;
 struct data_bond *db = nullptr;
 // PagerClient::pocsag_data *pd = nullptr;
 //endregion
@@ -262,39 +263,32 @@ void updateInfo() {
             delay(2000); // 暂停2秒让你看到
         }
 
-        // 蜂鸣器低压报警
-        for(int i=0; i<3; i++){
-            digitalWrite(BUZZER_PIN, HIGH);
-            delay(300);
-            digitalWrite(BUZZER_PIN, LOW);
-            delay(300);
-        }
+        buzzer.beep(3, 300, 300);
 
         low_volt_warned = true; // 锁定，防止一直叫唤
 
-    
+    }
+
     if (voltage < 3.10) {
         Serial.println("Critical Voltage! System Halted.");
-        u8g2->clearBuffer();
-        u8g2->setDrawColor(0); // 用黑色背景擦除一块区域
-        u8g2->drawBox(20, 20, 88, 24);
-        u8g2->setDrawColor(1); // 用白色写字
-        u8g2->drawFrame(20, 20, 88, 24); // 画个框
-        u8g2->setFont(u8g2_font_wqy12_t_gb2312);
-        u8g2->setCursor(35, 38);
-        u8g2->print("电量耗尽!");
-        u8g2->sendBuffer();
-        
+        if (u8g2) {
+            u8g2->clearBuffer();
+            u8g2->setDrawColor(0); // 用黑色背景擦除一块区域
+            u8g2->drawBox(20, 20, 88, 24);
+            u8g2->setDrawColor(1); // 用白色写字
+            u8g2->drawFrame(20, 20, 88, 24); // 画个框
+            u8g2->setFont(u8g2_font_wqy12_t_gb2312);
+            u8g2->setCursor(35, 38);
+            u8g2->print("电量耗尽!");
+            u8g2->sendBuffer();
+        }
+
         sd1.end(); // 安全卸载 SD 卡
-        
-        // 让蜂鸣器长鸣一声表示关机
-        digitalWrite(BUZZER_PIN, HIGH);
-        delay(3000);
-        digitalWrite(BUZZER_PIN, LOW);
+
+        buzzer.hold(3000);
         
         // 进入死循环或深度睡眠，不再进行任何操作
         esp_deep_sleep_start();
-        }
     }
     u8g2->drawStr(108, 64, buffer);
     u8g2->sendBuffer();
@@ -634,9 +628,7 @@ void setup() {
     sd1.setFS(SD);
     delay(150);
 
-    // 蜂鸣器初始化
-    pinMode(BUZZER_PIN, OUTPUT);
-    digitalWrite(BUZZER_PIN, LOW); // 默认不响
+    buzzer.begin(BUZZER_PIN);
 
     // Configure time sync.
     sntp_set_time_sync_notification_cb(timeAvailable);
@@ -1009,12 +1001,7 @@ void loop() {
 
     // if task complete, de-initialize
     if (fd_state == TASK_DONE) {
-        if (task_fd != nullptr) {
-            // Serial.printf("[D] NULLPTR EXCE [%llu]\n", millis64() - format_task_timer);
-            vTaskDelete(task_fd);
-            // Serial.printf("[D] TASK DEL [%llu]\n", millis64() - format_task_timer);
-            task_fd = nullptr;
-        }
+        task_fd = nullptr;
         // Serial.printf("[D] NULLPTR [%llu]\n", millis64() - format_task_timer);
         initFmtVars();
         // Serial.printf("[D] INIT VARS [%llu]\n", millis64() - format_task_timer);
@@ -1103,20 +1090,16 @@ void loop() {
     // handle task timeout
     // timeout & running | created
     // todo: simplify this judgement.
-    if (millis64() - format_task_timer >= FD_TASK_TIMEOUT && (fd_state == TASK_RUNNING || fd_state == TASK_CREATED)
-        && task_fd != nullptr && format_task_timer != 0) {
-        vTaskDelete(task_fd);
-        task_fd = nullptr;
-        // fd_state = TASK_TERMINATED;
-        dualPrintln("[Pager] FD_TASK Timeout.");
-        sd1.append("[Pager] FD_TASK Timeout.\n");
-        initFmtVars();
+    if (millis64() - format_task_timer >= FD_TASK_TIMEOUT &&
+        (fd_state == TASK_RUNNING || fd_state == TASK_CREATED || fd_state == TASK_RUNNING_SCREEN) &&
+        task_fd != nullptr && format_task_timer != 0) {
+        fd_state = TASK_TERMINATED;
+        dualPrintln("[Pager] FD_TASK Timeout, waiting for task completion.");
+        sd1.append("[Pager] FD_TASK Timeout, waiting for task completion.\n");
         Serial.printf("LED LOW [%llu]\n", millis64() - format_task_timer);
         digitalWrite(BOARD_LED, LED_OFF);
-        format_task_timer = 0;
         led_timer = 0;
         changeCpuFreq(240);
-        fd_state = TASK_INIT;
     }
     // else if (millis64() - format_task_timer >= FD_TASK_TIMEOUT && fd_state != TASK_INIT && format_task_timer != 0 &&
     //            fd_state != TASK_RUNNING_SCREEN) { // terminate task while u8g2 operation causes main loop stuck.
@@ -1150,12 +1133,13 @@ void loop() {
     if (pager.available() >= 2 && fd_state == TASK_INIT) { // todo add session timeout exception to prevent stuck here.
         // Serial.println("[PHY-LAYER][D] AVAILABLE > 2.");
         setCpuFrequencyMhz(240);
-        db = new data_bond;
+        db_storage = data_bond{};
+        db = &db_storage;
         runtime_timer = millis64();
         timer4 = millis64();
         int state = pager.readDataMSA(db->pocsagData, 0);
 //        sd1.append("[PHY-LAYER][D] AVAILABLE > 2.\n");
-        rxInfo.rssi = rssi_cache / (float) rxInfo.cnt;
+        rxInfo.rssi = rxInfo.cnt > 0 ? rssi_cache / (float) rxInfo.cnt : 0;
         rssi_cache = 0;
         rxInfo.cnt = 0;
         rxInfo.timer = 0;
@@ -1202,23 +1186,25 @@ void loop() {
 
             sd1.append(2, "正在格式化输出...\n");
             // formatDataTask();
+            fd_state = TASK_CREATED;
             auto x_ret = xTaskCreatePinnedToCore(formatDataTask, "task_fd",
                                                  FD_TASK_STACK_SIZE, nullptr,
                                                  2, &task_fd, ARDUINO_RUNNING_CORE);
             if (x_ret == pdPASS) {
-                fd_state = TASK_CREATED;
                 delay(1);
             } else if (x_ret == errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) {
+                fd_state = TASK_INIT;
                 int x_ret1;
                 for (int i = 0; i < FD_TASK_ATTEMPTS; ++i) {
+                    fd_state = TASK_CREATED;
                     x_ret1 = xTaskCreatePinnedToCore(formatDataTask, "task_fd",
                                                      FD_TASK_STACK_SIZE, nullptr,
                                                      2, &task_fd, ARDUINO_RUNNING_CORE);
                     if (x_ret1 == pdPASS) {
-                        fd_state = TASK_CREATED;
                         delay(1);
                         break;
                     }
+                    fd_state = TASK_INIT;
                     Serial.printf("[Pager] FTask failed memory allocation, error %d, mem left %d B, retry %d\n",
                                   x_ret1, esp_get_free_heap_size(), i);
                     sd1.append("[Pager] FTask failed memory allocation, error %d, mem left %d B, retry %d\n",
@@ -1234,6 +1220,7 @@ void loop() {
                     digitalWrite(BOARD_LED, LED_OFF);
                 }
             } else {
+                fd_state = TASK_INIT;
                 dualPrintf(true, "[Pager] Failed to create format task, errcode %d\n", x_ret);
                 sd1.append("[Pager] Failed to create format task, errcode %d\n", x_ret);
                 fd_state = TASK_CREATE_FAILED;
@@ -1260,23 +1247,7 @@ void loop() {
         }
     }
 
-    // 蜂鸣器控制逻辑
-    // 判断信号是否超时 (超过 3000ms没收到新信号则认为车已离开)
-    if (millis() - last_signal_time > 3000) {
-        signal_active = false;
-        digitalWrite(BUZZER_PIN, LOW); // 彻底关闭
-    }
-    
-    // 如果信号活跃，制造 嘀嘀嘀 的节奏
-    if (signal_active) {
-        // 利用取余运算实现节奏，1000ms一个周期
-        int rhythm = millis() % 1000; 
-        if (rhythm < 500) { 
-            digitalWrite(BUZZER_PIN, HIGH); // 响
-        } else {
-            digitalWrite(BUZZER_PIN, LOW);  // 停
-        }
-    }
+    buzzer.update();
 }
 
 void revertFrequency() {
@@ -1471,19 +1442,19 @@ void initFmtVars() {
     //     i = 0;
     // }
     if (db != nullptr) {
-        delete db;
+        db->str = "";
         db = nullptr;
     }
 }
 
 void formatDataTask(void *pVoid) {
-    fd_state = TASK_RUNNING;
+    if (fd_state != TASK_TERMINATED) {
+        fd_state = TASK_RUNNING;
+    }
     // Serial.printf("[FD-Task] Stack High Mark Begin %u\n", uxTaskGetStackHighWaterMark(nullptr));
     sd1.append(2, "格式化任务已创建\n");
 
-    // 蜂鸣器 收到有效信号 激活蜂鸣器
-    last_signal_time = millis();
-    signal_active = true;
+    buzzer.notifySignal();
 
     for (auto &i: db->pocsagData) {
         if (i.is_empty)
@@ -1518,7 +1489,9 @@ void formatDataTask(void *pVoid) {
 // Serial.printf("type %d \n",lbj.type);
 
 #ifdef HAS_DISPLAY
-    fd_state = TASK_RUNNING_SCREEN;
+    if (fd_state != TASK_TERMINATED) {
+        fd_state = TASK_RUNNING_SCREEN;
+    }
     if (u8g2) {
 #ifdef HAS_OLED_TIMEOUT
         if (oled_off) {
@@ -1542,8 +1515,8 @@ void formatDataTask(void *pVoid) {
     sd1.append(2, "任务堆栈标 %u\n", uxTaskGetStackHighWaterMark(nullptr));
     // sd1.append("[FD-Task] Stack High Mark %u\n", uxTaskGetStackHighWaterMark(nullptr));
     sd1.append(2, "格式化输出任务完成，用时[%llu]\n", millis64() - runtime_timer);
-    fd_state = TASK_DONE;
     task_fd = nullptr;
+    fd_state = TASK_DONE;
     vTaskDelete(nullptr);
 }
 
