@@ -47,11 +47,13 @@ public:
 
     void appendBuffer(int level, const char *format, ...);
 
-    void sendBufferLOG();
+    void sendBufferLOG(bool flushAfterWrite = true);
 
     void appendBufferCSV(const char *format, ...);
 
-    void sendBufferCSV();
+    void sendBufferCSV(bool flushAfterWrite = true);
+
+    void flushCSV();
 
     void printTel(unsigned int chars, ESPTelnet &tel);
 

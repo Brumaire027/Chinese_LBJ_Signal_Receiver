@@ -1,6 +1,7 @@
 #include<Arduino.h>
 #include<RadioLib.h>
 #include "BCH3121.hpp"
+#include "debug_log.hpp"
 #include "networks.hpp"
 
 bool fixBCH(uint32_t &cw, CBCH3121 &bch, uint16_t &err) {
@@ -20,8 +21,8 @@ bool fixBCH(uint32_t &cw, CBCH3121 &bch, uint16_t &err) {
         cw ^= mask;
         if (bch.decode(cw, err, p_check) && p_check) {
             err += err_last;
-            Serial.printf("[D] Correction Success!\n");
-            sd1.append("[D] Correction Success!\n");
+            debugLogVerbose("[D] Correction Success!\n");
+            debugLogVerboseSd("[D] Correction Success!\n");
             return true;
         }
         cw = cw_last;
@@ -400,7 +401,7 @@ int16_t PagerClient::readDataMA(uint8_t *data, size_t *len, uint32_t *addr, uint
         // check overflow from previous code word
         uint8_t bitPos = RADIOLIB_PAGER_CODE_WORD_LEN - 1 - symbolLength;
 //        Serial.println("GOT DATA.");
-        Serial.printf("RAW CW %X \n", cw);
+        debugLogVerbose("RAW CW %X \n", cw);
         if (overflow) {
             overflow = false;
 

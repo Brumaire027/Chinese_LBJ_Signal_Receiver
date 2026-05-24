@@ -5,6 +5,8 @@
 
 #include "boards.hpp"
 
+#include "debug_log.hpp"
+
 // 显示屏对象
 #ifdef HAS_DISPLAY
     DISPLAY_MODEL *u8g2 = nullptr;
@@ -33,7 +35,7 @@ uint64_t millis64() {
 // === 3. 初始化函数 ===
 void initBoard() {
     Serial.begin(115200);
-    Serial.println("\n[Board] Init Started (DIY Version)...");
+    debugLogInfoPrintln("\n[Board] Init Started (DIY Version)...");
 
     // --- LED 初始化 ---
     #ifdef BOARD_LED
@@ -51,7 +53,7 @@ void initBoard() {
 
     // --- OLED 初始化 ---
     #ifdef HAS_DISPLAY
-        Serial.println("[Display] Init...");
+        debugLogInfoPrintln("[Display] Init...");
         // 这里的 OLED_RST 在 ini 里定义为 -1
         u8g2 = new DISPLAY_MODEL(U8G2_R0, OLED_RST, I2C_SCL, I2C_SDA);
         
@@ -62,24 +64,24 @@ void initBoard() {
             u8g2->drawStr(0, 26, "System Init...");
             u8g2->sendBuffer();
         } else {
-            Serial.println("[Display] Failed!");
+            debugLogErrorPrintln("[Display] Failed!");
         }
     #endif
 
     // --- SD 卡初始化 ---
     #ifdef HAS_SDCARD
-        Serial.println("[SD] Init...");
+        debugLogInfoPrintln("[SD] Init...");
         // 注意：SD卡使用 SDSPI 实例，引脚来自 platformio.ini
         SDSPI.begin(SDCARD_SCLK, SDCARD_MISO, SDCARD_MOSI, SDCARD_CS);
         
         if (!SD.begin(SDCARD_CS, SDSPI)) {
-            Serial.println("[SD] Mount Failed!");
+            debugLogErrorPrintln("[SD] Mount Failed!");
             if(u8g2) {
                 u8g2->drawStr(0, 40, "SD: Fail");
                 u8g2->sendBuffer();
             }
         } else {
-            Serial.println("[SD] Mounted Successfully");
+            debugLogInfoPrintln("[SD] Mounted Successfully");
             have_sd = true;
             if(u8g2) {
                 u8g2->drawStr(0, 40, "SD: OK");
@@ -90,17 +92,17 @@ void initBoard() {
 
     // --- RTC 初始化 ---
     #ifdef HAS_RTC
-        Serial.println("[RTC] Init...");
+        debugLogInfoPrintln("[RTC] Init...");
         if (!rtc.begin()) {
-            Serial.println("[RTC] Not Found!");
+            debugLogErrorPrintln("[RTC] Not Found!");
         } else {
             if (!rtc.isrunning()) {
-                Serial.println("[RTC] Not running, setting time...");
+                debugLogInfoPrintln("[RTC] Not running, setting time...");
                 rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
             }
             // 打印当前时间测试
             DateTime now = rtc.now();
-            Serial.printf("[RTC] Time: %02d:%02d:%02d\n", now.hour(), now.minute(), now.second());
+            debugLogInfo("[RTC] Time: %02d:%02d:%02d\n", now.hour(), now.minute(), now.second());
         }
     #endif
     
@@ -109,5 +111,5 @@ void initBoard() {
         battery.attach(ADC_PIN);
     #endif
 
-    Serial.println("[Board] Init Done.\n");
+    debugLogInfoPrintln("[Board] Init Done.\n");
 }

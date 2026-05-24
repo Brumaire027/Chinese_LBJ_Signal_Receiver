@@ -99,6 +99,8 @@ extern bool telnet_online;
 
 bool isConnected();
 
+bool isTelnetOutputAvailable();
+
 bool connectWiFi();
 
 void performSmartConfig();
@@ -153,11 +155,13 @@ void telPrintLog(int chars);
 
 void printDataSerial(PagerClient::pocsag_data *p, const struct lbj_data &l, const struct rx_info &r);
 
-void appendDataLog(PagerClient::pocsag_data *p, const struct lbj_data &l, const struct rx_info &r);
+void appendDataLog(PagerClient::pocsag_data *p, const struct lbj_data &l, const struct rx_info &r,
+                   bool flushAfterWrite = true);
 
 void printDataTelnet(PagerClient::pocsag_data *p, const struct lbj_data &l, const struct rx_info &r);
 
-void appendDataCSV(PagerClient::pocsag_data *p, const struct lbj_data &l, const struct rx_info &r);
+void appendDataCSV(PagerClient::pocsag_data *p, const struct lbj_data &l, const struct rx_info &r,
+                   bool flushAfterWrite = true);
 
 float getBias(float freq);
 

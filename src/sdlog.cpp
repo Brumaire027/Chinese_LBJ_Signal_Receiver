@@ -4,6 +4,8 @@
 
 #include "sdlog.hpp"
 
+#include "debug_log.hpp"
+
 // Initialize static variables.
 // File SD_LOG::log;
 // File SD_LOG::csv;
@@ -56,14 +58,14 @@ void SD_LOG::getFilename(const char *path) {
         filesys->mkdir(path);
         cwd = filesys->open(path, FILE_READ, false);
         if (!cwd) {
-            Serial.println("[SDLOG] Failed to open log directory!");
-            Serial.println("[SDLOG] Will not write log to SD card.");
+            debugLogError("[SDLOG] Failed to open log directory!\n");
+            debugLogError("[SDLOG] Will not write log to SD card.\n");
             sd_log = false;
             return;
         }
     }
     if (!cwd.isDirectory()) {
-        Serial.println("[SDLOG] log directory error!");
+        debugLogError("[SDLOG] log directory error!\n");
         sd_log = false;
         return;
     }
@@ -92,7 +94,7 @@ void SD_LOG::getFilename(const char *path) {
         // update index
         updateIndex(String(path),counter + 1);
     }
-    Serial.printf("[SDLOG] %d log files, using %s \n", counter, filename);
+    debugLogInfo("[SDLOG] %d log files, using %s \n", counter, filename);
     sd_log = true;
 }
 
@@ -102,14 +104,14 @@ void SD_LOG::getFilenameCSV(const char *path) {
         filesys->mkdir(path);
         cwd = filesys->open(path, FILE_READ, false);
         if (!cwd) {
-            Serial.println("[SDLOG] Failed to open csv directory!");
-            Serial.println("[SDLOG] Will not write csv to SD card.");
+            debugLogError("[SDLOG] Failed to open csv directory!\n");
+            debugLogError("[SDLOG] Will not write csv to SD card.\n");
             sd_csv = false;
             return;
         }
     }
     if (!cwd.isDirectory()) {
-        Serial.println("[SDLOG] csv directory error!");
+        debugLogError("[SDLOG] csv directory error!\n");
         sd_csv = false;
         return;
     }
@@ -134,7 +136,7 @@ void SD_LOG::getFilenameCSV(const char *path) {
         is_newfile_csv = true;
         updateIndex(String(path),counter + 1);
     }
-    Serial.printf("[SDLOG] %d csv files, using %s \n", counter, filename_csv);
+    debugLogInfo("[SDLOG] %d csv files, using %s \n", counter, filename_csv);
     sd_csv = true;
 }
 
@@ -146,8 +148,8 @@ int SD_LOG::begin(const char *path) {
     log_path = String(String(path) + '/' + filename);
     log = filesys->open(log_path, "a", true);
     if (!log) {
-        Serial.println("[SDLOG] Failed to open log file!");
-        Serial.println("[SDLOG] Will not write log to SD card.");
+        debugLogError("[SDLOG] Failed to open log file!\n");
+        debugLogError("[SDLOG] Will not write log to SD card.\n");
         sd_log = false;
         return -1;
     }
@@ -164,8 +166,8 @@ int SD_LOG::beginCSV(const char *path) {
     csv_path = String(String(path) + '/' + filename_csv);
     csv = filesys->open(csv_path, "a", true);
     if (!csv) {
-        Serial.println("[SDLOG] Failed to open csv file!");
-        Serial.println("[SDLOG] Will not write csv to SD card.");
+        debugLogError("[SDLOG] Failed to open csv file!\n");
+        debugLogError("[SDLOG] Will not write csv to SD card.\n");
         sd_csv = false;
         return -1;
     }
@@ -207,7 +209,7 @@ void SD_LOG::writeHeaderCSV() { // TODO: needs more confirmation about title.
         if (sd_log) {
             append("[SDLOG][D] Writing CSV Headers, is_newfile = %d, filesize = %d\n", is_newfile_csv, csv.size());
         }
-        Serial.printf("[SDLOG][D] Writing CSV Headers, is_newfile = %d, filesize = %d\n", is_newfile_csv, csv.size());
+        debugLogVerbose("[SDLOG][D] Writing CSV Headers, is_newfile = %d, filesize = %d\n", is_newfile_csv, csv.size());
     }
     // csv.flush();
     csv.close();
@@ -220,7 +222,7 @@ void SD_LOG::appendCSV(const char *format, ...) { // TODO: maybe implement item 
         return;
     }
     if (!filesys->exists(csv_path)) {
-        Serial.println("[SDLOG] CSV file unavailable!");
+        debugLogError("[SDLOG] CSV file unavailable!\n");
         sd_csv = false;
         SD.end();
         return;
@@ -258,7 +260,7 @@ void SD_LOG::append(const char *format, ...) {
         return;
     }
     if (!filesys->exists(log_path)) {
-        Serial.printf("[SDLOG] Log file %s unavailable!\n", log_path.c_str());
+        debugLogError("[SDLOG] Log file %s unavailable!\n", log_path.c_str());
         sd_log = false;
         SD.end();
         return;
@@ -339,11 +341,11 @@ void SD_LOG::appendBuffer(int level, const char *format, ...) {
     appendBuffer(buffer);
 }
 
-void SD_LOG::sendBufferLOG() {
+void SD_LOG::sendBufferLOG(bool flushAfterWrite) {
     if (!sd_log)
         return;
     if (!filesys->exists(log_path)) {
-        Serial.println("[SDLOG] Log file unavailable!");
+        debugLogError("[SDLOG] Log file unavailable!\n");
         sd_log = false;
         SD.end();
         return;
@@ -357,7 +359,8 @@ void SD_LOG::sendBufferLOG() {
         begin(log_directory);
     }
     log.print(large_buffer);
-    log.flush();
+    if (flushAfterWrite)
+        log.flush();
     large_buffer = "";
 }
 
@@ -396,12 +399,12 @@ void SD_LOG::appendBufferCSV(const char *format, ...) {
     large_buffer_csv += buffer;
 }
 
-void SD_LOG::sendBufferCSV() {
+void SD_LOG::sendBufferCSV(bool flushAfterWrite) {
     if (!sd_csv) {
         return;
     }
     if (!filesys->exists(csv_path)) {
-        Serial.println("[SDLOG] CSV file unavailable!");
+        debugLogError("[SDLOG] CSV file unavailable!\n");
         sd_csv = false;
         SD.end();
         return;
@@ -411,8 +414,15 @@ void SD_LOG::sendBufferCSV() {
         beginCSV(csv_directory);
     }
     csv.print(large_buffer_csv);
-    csv.flush();
+    if (flushAfterWrite)
+        csv.flush();
     large_buffer_csv = "";
+}
+
+void SD_LOG::flushCSV() {
+    if (!sd_csv || !csv)
+        return;
+    csv.flush();
 }
 
 File SD_LOG::logFile(char op) {
@@ -449,7 +459,7 @@ void SD_LOG::printTel(unsigned int chars, ESPTelnet &tel) {
     // Serial.println("LEFT = " + String(chars - log_r.size()));
     String line;
     if (!log_r.seek(pos))
-        Serial.println("[SDLOG] seek failed!");
+        debugLogError("[SDLOG] seek failed!\n");
     while (log_r.available()) {
         line = log_r.readStringUntil('\n');
         if (line) {
@@ -463,14 +473,14 @@ void SD_LOG::printTel(unsigned int chars, ESPTelnet &tel) {
         char last_file_name[32];
         sprintf(last_file_name, "LOG_%04d.txt", log_count - 2);
         String log_last_path = String(log_directory) + '/' + String(last_file_name);
-        Serial.println(log_last_path);
+    debugLogInfoPrintln(log_last_path);
         log_r = filesys->open(log_last_path, "r");
         if (left < log_r.size())
             pos = log_r.size() - left;
         else
             pos = 0;
         if (!log_r.seek(pos)) {
-            Serial.println("[SDLOG] seek failed!");
+            debugLogError("[SDLOG] seek failed!\n");
         }
         while (log_r.available()) {
             line = log_r.readStringUntil('\n');
@@ -517,13 +527,13 @@ int SD_LOG::beginCD(const char *path) {
         filesys->mkdir(path);
         cwd = filesys->open(path, FILE_READ, false);
         if (!cwd) {
-            Serial.println("[SDLOG] Failed to open coredump directory!");
-            Serial.println("[SDLOG] Will not write coredump to SD card.");
+            debugLogError("[SDLOG] Failed to open coredump directory!\n");
+            debugLogError("[SDLOG] Will not write coredump to SD card.\n");
             return -1;
         }
     }
     if (!cwd.isDirectory()) {
-        Serial.println("[SDLOG] coredump directory error!");
+        debugLogError("[SDLOG] coredump directory error!\n");
         return -2;
     }
     int counter = 0;
@@ -531,13 +541,13 @@ int SD_LOG::beginCD(const char *path) {
         counter++;
     }
     sprintf(filename_cd, "COREDUMP_%04d.bin", counter);
-    Serial.printf("[SDLOG] %d coredump files, using %s \n", counter, filename_cd);
+    debugLogInfo("[SDLOG] %d coredump files, using %s \n", counter, filename_cd);
 
     cd_path = String(String(path) + '/' + filename_cd);
     cd = filesys->open(cd_path, "a", true);
     if (!cd) {
-        Serial.println("[SDLOG] Failed to open coredump file!");
-        Serial.println("[SDLOG] Will not write coredump to SD card.");
+        debugLogError("[SDLOG] Failed to open coredump file!\n");
+        debugLogError("[SDLOG] Will not write coredump to SD card.\n");
         return -3;
     }
     sd_cd = true;

@@ -4,6 +4,8 @@
 
 #include "networks.hpp"
 
+#include "debug_log.hpp"
+
 /* ------------------------------------------------ */
 Preferences preferences;
 ESPTelnet telnet;
@@ -20,39 +22,43 @@ bool isConnected() {
     return (WiFiClass::status() == WL_CONNECTED);
 }
 
+bool isTelnetOutputAvailable() {
+    return telnet_online;
+}
+
 void performSmartConfig() {
     WiFi.beginSmartConfig();
-    Serial.println("[Network]Waiting for SmartConfig...");
+    debugLogInfoPrintln("[Network]Waiting for SmartConfig...");
     while (!WiFi.smartConfigDone()) {
         delay(500);
-        Serial.print(".");
+        debugLogInfoPrint(".");
     }
-    Serial.println("\n[Network]SmartConfig received.");
-    Serial.println("[Network]Connecting to WiFi...");
+    debugLogInfoPrintln("\n[Network]SmartConfig received.");
+    debugLogInfoPrintln("[Network]Connecting to WiFi...");
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
-        Serial.print(".");
+        debugLogInfoPrint(".");
     }
-    Serial.println("\n[Network]WiFi connected.");
+    debugLogInfoPrintln("\n[Network]WiFi connected.");
     preferences.putString("ssid", WiFi.SSID());
     preferences.putString("password", WiFi.psk());
-    Serial.println("[Network]WiFi credentials saved.");
+    debugLogInfoPrintln("[Network]WiFi credentials saved.");
 }
 
 bool connectToWiFi(const String &ssid, const String &password, int timeout) {
     WiFi.begin(ssid.c_str(), password.c_str());
-    Serial.print("Connecting to saved WiFi...");
+    debugLogInfoPrint("Connecting to saved WiFi...");
     auto startAttemptTime = millis64();
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
-        Serial.print(".");
+        debugLogInfoPrint(".");
         if (millis64() - startAttemptTime > timeout) // Retry for 10 seconds
         {
-            Serial.println("\n[Network]Failed to connect.");
+            debugLogErrorPrintln("\n[Network]Failed to connect.");
             return false;
         }
     }
-    Serial.println("\n[Network]WiFi connected using saved credentials.");
+    debugLogInfoPrintln("\n[Network]WiFi connected using saved credentials.");
     return true;
 }
 
@@ -60,7 +66,7 @@ bool connectWiFi() {
     WiFiClass::mode(WIFI_STA);
     if (!wifiPassword.isEmpty() && !wifiSSID.isEmpty()) {
         WiFi.begin(wifiSSID, wifiPassword);
-        Serial.println("[Network]Connecting to WiFi...");
+        debugLogInfoPrintln("[Network]Connecting to WiFi...");
     }
 
     preferences.begin("wifi-config", false);
@@ -77,8 +83,8 @@ bool connectWiFi() {
     } else {
         performSmartConfig();
     }
-    Serial.print("[Network]IP Address: ");
-    Serial.println(WiFi.localIP());
+    debugLogInfoPrint("[Network]IP Address: ");
+    debugLogInfoPrintln(WiFi.localIP());
     WiFi.setAutoReconnect(true);
     WiFi.persistent(true);
     preferences.end();
@@ -121,7 +127,7 @@ void changeCpuFreq(uint32_t freq_mhz) {
         // Serial.println("[D] CALL WIFI OFF");
         auto timer = millis64();
         WiFiClass::mode(WIFI_OFF);
-        Serial.printf("[D] WIFI OFF [%llu] \n", millis64() - timer);
+        debugLogVerbose("[D] WIFI OFF [%llu] \n", millis64() - timer);
         if (ets_get_cpu_frequency() != freq_mhz)
             setCpuFrequencyMhz(freq_mhz);
         // fixme: this needs to be modified to fit the requirement.
@@ -143,9 +149,9 @@ void changeCpuFreq(uint32_t freq_mhz) {
 
 void timeAvailable(struct timeval *t) {
     tm ti2{};
-    Serial.println("[SNTP] Got time adjustment from NTP!");
+    debugLogInfoPrintln("[SNTP] Got time adjustment from NTP!");
     getLocalTime(&time_info);
-    Serial.println(&time_info, "[SNTP] %Y-%m-%d %H:%M:%S");
+    debugLogInfoPrintln(&time_info, "[SNTP] %Y-%m-%d %H:%M:%S");
 #ifdef HAS_RTC
     getLocalTime(&time_info);
     rtc.adjust(rtcLibtoC(time_info));
@@ -153,8 +159,8 @@ void timeAvailable(struct timeval *t) {
     auto timer = esp_timer_get_time();
     ti2 = rtcLibtoC(rtc.now());
     // rtc.getDateTime(ti2);
-    Serial.print(&ti2, "[eRTC] Time set to %Y-%m-%d %H:%M:%S ");
-    Serial.printf("[%lld]\n", esp_timer_get_time() - timer);
+    debugLogInfoPrint(&ti2, "[eRTC] Time set to %Y-%m-%d %H:%M:%S ");
+    debugLogInfo("[%lld]\n", esp_timer_get_time() - timer);
 #endif
 }
 
@@ -222,9 +228,9 @@ DateTime rtcLibtoC(const tm &ctime) {
 
 // (optional) callback functions for telnet events
 void onTelnetConnect(String ip) {
-    Serial.print("[Telnet] ");
-    Serial.print(ip);
-    Serial.println(" connected");
+    debugLogInfoPrint("[Telnet] ");
+    debugLogInfoPrint(ip);
+    debugLogInfoPrintln(" connected");
 
     telnet.println("===[ESP32 DEV MODULE TELNET SERVICE]===");
     getLocalTime(&time_info, 10);
@@ -240,21 +246,21 @@ void onTelnetConnect(String ip) {
 }
 
 void onTelnetDisconnect(String ip) {
-    Serial.print("[Telnet] ");
-    Serial.print(ip);
-    Serial.println(" disconnected");
+    debugLogInfoPrint("[Telnet] ");
+    debugLogInfoPrint(ip);
+    debugLogInfoPrintln(" disconnected");
 }
 
 void onTelnetReconnect(String ip) {
-    Serial.print("[Telnet] ");
-    Serial.print(ip);
-    Serial.println(" reconnected");
+    debugLogInfoPrint("[Telnet] ");
+    debugLogInfoPrint(ip);
+    debugLogInfoPrintln(" reconnected");
 }
 
 void onTelnetConnectionAttempt(String ip) {
-    Serial.print("[Telnet] ");
-    Serial.print(ip);
-    Serial.println(" tried to connected");
+    debugLogInfoPrint("[Telnet] ");
+    debugLogInfoPrint(ip);
+    debugLogInfoPrintln(" tried to connected");
 }
 
 void onTelnetInput(String str) {
@@ -316,12 +322,12 @@ void onTelnetInput(String str) {
                 prb_timer = 0;
                 freq_correction = false;
                 telnet.println("> Frequency Correction Disabled");
-                Serial.println("[Telnet] > Frequency Correction Disabled");
+                debugLogInfoPrintln("[Telnet] > Frequency Correction Disabled");
             }
             else if (args[1] == "on") {
                 freq_correction = true;
                 telnet.println("> Frequency Correction Enabled");
-                Serial.println("[Telnet] > Frequency Correction Enabled");
+                debugLogInfoPrintln("[Telnet] > Frequency Correction Enabled");
             }
         }
         if (args[0] == "ppm") {
@@ -348,7 +354,7 @@ void onTelnetInput(String str) {
     // checks for a certain command
     if (str == "ping") {
         telnet.println("> pong");
-        Serial.println("[Telnet] > pong");
+        debugLogInfoPrintln("[Telnet] > pong");
         // disconnect the client
     } else if (str == "bye") {
         telnet.println("> disconnecting you...");
@@ -368,12 +374,12 @@ void onTelnetInput(String str) {
         ext_call = true;
     } else if (str == "time") {
         telPrintf(true, "Time requested.\n");
-        Serial.printf("[Telnet] > Time requested.\n");
+        debugLogInfo("[Telnet] > Time requested.\n");
         ext_call = true;
     } else if (str == "task time") {
         xTaskCreatePinnedToCore(timeTask, "timeTask", 2048,
                                 nullptr, 1, nullptr, ARDUINO_RUNNING_CORE);
-        Serial.println("[Telnet] > Thread time requested.");
+        debugLogInfoPrintln("[Telnet] > Thread time requested.");
     }
     if (!ext_call)
         telnet.print("< ");
@@ -390,12 +396,11 @@ void setupTelnet() {
     telnet.onDisconnect(onTelnetDisconnect);
     telnet.onInputReceived(onTelnetInput);
 
-    Serial.print("[Telnet] ");
     if (telnet.begin(port)) {
-        Serial.println("running");
+        debugLogInfo("[Telnet] running\n");
         telnet_online = true;
     } else {
-        Serial.println("error.");
+        debugLogError("[Telnet] error.\n");
     }
 }
 
@@ -404,9 +409,9 @@ void setupTelnet() {
 void timeTask(void *pVoid) {
     telPrintf(true, "Thread time requested.\n");
     delay(5000);
-    Serial.printf("Running on Core %d\n", xPortGetCoreID());
+    debugLogInfo("Running on Core %d\n", xPortGetCoreID());
     telPrintf(true, "Thread time requested.\n");
-    Serial.println("Thread time requested.");
+    debugLogInfoPrintln("Thread time requested.");
     vTaskDelete(nullptr);
 }
 
@@ -432,7 +437,7 @@ int16_t readDataLBJ(struct PagerClient::pocsag_data *p, struct lbj_data *l) {
                     (p[i].str[1] && p[i].str[2] && p[i].str[3] && p[i].str[4] != '-')) {
 
                     p[i].addr = LBJ_SYNC_ADDR; // don't know if addr = 1234008 can perform this.
-                    Serial.println("Transformed type.");
+                    debugLogVerbosePrintln("Transformed type.");
                     goto lbj_sync;
                 } else {
                     l->type = 0;
@@ -795,7 +800,7 @@ void telPrintLog(int chars) {
     left = chars - log.size();
     String line;
     if (!log.seek(pos))
-        Serial.println("[SDLOG] seek failed!");
+        debugLogError("[SDLOG] seek failed!\n");
     while (log.available()) {
         line = log.readStringUntil('\n');
         if (line) {
@@ -880,7 +885,8 @@ void printDataSerial(PagerClient::pocsag_data *p, const struct lbj_data &l, cons
     }
 }
 
-void appendDataLog(PagerClient::pocsag_data *p, const struct lbj_data &l, const struct rx_info &r) {
+void appendDataLog(PagerClient::pocsag_data *p, const struct lbj_data &l, const struct rx_info &r,
+                   bool flushAfterWrite) {
     /* [LBJ] 方向: 下行  车次: 12345  速度: 122km/h  公里标: 1255.5km [R:-85.6 dBm/F:123.54Hz][1234000/1: 52011  70  1503][E:05/10/100]
      * [LBJ] 当前时间 12:45  [R:-85.6 dBm/F:123.54Hz][1234008/1:-1245][E:00/00/32]
      * ==================================================================================
@@ -955,7 +961,7 @@ void appendDataLog(PagerClient::pocsag_data *p, const struct lbj_data &l, const 
         }
         sd1.appendBuffer("\n");
     }
-    sd1.sendBufferLOG();
+    sd1.sendBufferLOG(flushAfterWrite);
 }
 
 void printDataTelnet(PagerClient::pocsag_data *p, const struct lbj_data &l, const struct rx_info &r) {
@@ -1024,7 +1030,8 @@ void printDataTelnet(PagerClient::pocsag_data *p, const struct lbj_data &l, cons
     }
 }
 
-void appendDataCSV(PagerClient::pocsag_data *p, const struct lbj_data &l, const struct rx_info &r) {
+void appendDataCSV(PagerClient::pocsag_data *p, const struct lbj_data &l, const struct rx_info &r,
+                   bool flushAfterWrite) {
     // 电压,温度,系统时间,日期,时间,LBJ时间,方向,级别,车次,速度,公里标,机车编号,线路,纬度,经度,HEX,RSSI,FER,PPM(FER),PPM(CURRENT),原始数据,错误,错误率
     // 电压,系统时间,日期,时间,LBJ时间,方向,级别,车次,速度,公里标,机车编号,线路,纬度,经度,HEX,RSSI,FER,原始数据,错误,错误率
     // LBJ时间,方向,级别,车次,速度,公里标,机车编号,线路,纬度,经度,HEX,RSSI,FER,原始数据,错误,错误率
@@ -1099,7 +1106,7 @@ void appendDataCSV(PagerClient::pocsag_data *p, const struct lbj_data &l, const 
         sd1.appendBufferCSV("\",");
         sd1.appendBufferCSV("%d/%d,%.2f%%\n", err_un, err_ttl, ((float) err_ttl / (float) len) * 100);
     }
-    sd1.sendBufferCSV();
+    sd1.sendBufferCSV(flushAfterWrite);
 }
 
 float getBias(float freq) {

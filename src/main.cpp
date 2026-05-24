@@ -28,9 +28,9 @@
    https://jgromes.github.io/RadioLib/
 */
 /*
-   Chinses Railway LBJ Signal Reciver Create by Brumaire_027 & Gemini in Jan 2026
+   Chinses Railway LBJ Signal Reciver Create by Brumaire_027 & Coedx in Jan 2026
    Used ESP32 + SX1276 Model
-   Thanks for FLN1021's Original Program & JLC
+   Thanks for FLN1021's Original Program & JLC Inc.
 */
 
 //Program Start
@@ -42,13 +42,16 @@
 #include "buzzer.hpp"
 #include "coredump.h"
 #include "customfont.h"
+#include "data_formatter.hpp"
+#include "debug_log.hpp"
+#include "receiver_control.hpp"
+#include "serial_commands.hpp"
+#include "status_display.hpp"
+#include "task_state.hpp"
 #include <esp_task_wdt.h>
 
 #define WM_STRINGS_FILE "wm_strings_zh.h"
 #include <WiFiManager.h>
-
-//引入U8G2文字库
-extern const uint8_t u8g2_font_wqy15_t_custom[];
 
 #ifndef BUZZER_PIN
 #define BUZZER_PIN 25
@@ -98,11 +101,6 @@ bool is_ap_active = false;       // 标记是否处于 AP 配网模式
 unsigned long ap_start_time = 0; // 记录 AP 开启的时间点
 bool wifi_msg_shown = false;     // 标记是否正在显示配网提示画面
 
-inline float actualFreq(float bias) {
-    actual_frequency = (float) ((TARGET_FREQ * bias) / 1e6 + TARGET_FREQ);
-    return actual_frequency;
-}
-
 bool freq_correction = AFC_ENABLE;
 // bool bandwidth_altered = false;
 bool is_startline = true;
@@ -130,347 +128,8 @@ void simpleFormatTask();
 
 void initFmtVars();
 
-void handleSerialInput();
-
-void handleCarrier();
-
-void handlePreamble();
-
-void revertFrequency();
-
 TaskHandle_t task_fd;
-enum task_states {
-    TASK_INIT = 0,
-    TASK_CREATED = 1,
-    TASK_RUNNING = 2,
-    TASK_DONE = 3,
-    TASK_TERMINATED = 4,
-    TASK_CREATE_FAILED = 5,
-    TASK_RUNNING_SCREEN = 6
-};
-
 task_states fd_state;
-
-#ifdef HAS_DISPLAY
-
-void pword(const char *msg, int xloc, int yloc) {
-    int dspW = u8g2->getDisplayWidth();
-    int strW = 0;
-    char glyph[2];
-    glyph[1] = 0;
-    for (const char *ptr = msg; *ptr; *ptr++) {
-        glyph[0] = *ptr;
-        strW += u8g2->getStrWidth(glyph);
-        ++strW;
-        if (xloc + strW > dspW) {
-            int sxloc = xloc;
-            while (msg < ptr) {
-                glyph[0] = *msg++;
-                xloc += u8g2->drawStr(xloc, yloc, glyph);
-            }
-            strW -= xloc - sxloc;
-            yloc += u8g2->getMaxCharHeight();
-            xloc = 0;
-        }
-    }
-    while (*msg) {
-        glyph[0] = *msg++;
-        xloc += u8g2->drawStr(xloc, yloc, glyph);
-    }
-}
-
-void showInitComp() {
-    u8g2->clearBuffer();
-    u8g2->setFont(u8g2_font_squeezed_b7_tr);
-    // bottom (0,56,128,8)
-    String ipa = WiFi.localIP().toString();
-    u8g2->drawStr(0, 64, ipa.c_str());
-    if (have_sd && WiFiClass::status() == WL_CONNECTED)
-        u8g2->drawStr(89, 64, "D");
-    else if (have_sd)
-        u8g2->drawStr(89, 64, "L");
-    else if (WiFiClass::status() == WL_CONNECTED)
-        u8g2->drawStr(89, 64, "N");
-    char buffer[32];
-    sprintf(buffer, "%2u", ets_get_cpu_frequency() / 10);
-    u8g2->drawStr(96, 64, buffer);
-    sprintf(buffer, "%1.2f", battery.readVoltage() * 2);
-    u8g2->drawStr(108, 64, buffer);
-    // top (0,0,128,8)
-    if (!getLocalTime(&time_info, 0))
-        u8g2->drawStr(0, 7, "NO SNTP");
-    else {
-        sprintf(buffer, "%d-%02d-%02d %02d:%02d", time_info.tm_year + 1900, time_info.tm_mon + 1, time_info.tm_mday,
-                time_info.tm_hour, time_info.tm_min);
-        u8g2->drawStr(0, 7, buffer);
-    }
-    u8g2->sendBuffer();
-}
-
-void updateInfo() {
-    // update top
-    char buffer[32];
-    u8g2->setDrawColor(0);
-    u8g2->setFont(u8g2_font_squeezed_b7_tr);
-    u8g2->drawBox(0, 0, 97, 8);
-    u8g2->setDrawColor(1);
-    if (!getLocalTime(&time_info, 0))
-        u8g2->drawStr(0, 7, "NO SNTP");
-    else {
-        sprintf(buffer, "%d-%02d-%02d %02d:%02d", time_info.tm_year + 1900, time_info.tm_mon + 1, time_info.tm_mday,
-                time_info.tm_hour, time_info.tm_min);
-        u8g2->drawStr(0, 7, buffer);
-    }
-#ifdef HAS_RTC
-    // sprintf(buffer, "%dC", (int) rtc.getTemperature());
-    // u8g2->drawStr(80, 7, buffer);
-#endif
-    // update bottom
-    u8g2->setDrawColor(0);
-    u8g2->drawBox(0, 56, 128, 8);
-    u8g2->setDrawColor(1);
-    if (!no_wifi) {
-        String ipa = WiFi.localIP().toString();
-        u8g2->drawStr(0, 64, ipa.c_str());
-    } else
-        u8g2->drawStr(0, 64, "WIFI OFF");
-    sprintf(buffer, "%.1f", getBias(actual_frequency));
-    u8g2->drawStr(73, 64, buffer);
-    if (sd1.status() && WiFiClass::status() == WL_CONNECTED)
-        u8g2->drawStr(89, 64, "D");
-    else if (sd1.status())
-        u8g2->drawStr(89, 64, "L");
-    else if (WiFiClass::status() == WL_CONNECTED)
-        u8g2->drawStr(89, 64, "N");
-    sprintf(buffer, "%2u", ets_get_cpu_frequency() / 10);
-    u8g2->drawStr(96, 64, buffer);
-    voltage = battery.readVoltage() * 2;
-    sprintf(buffer, "%1.2f", voltage); // todo: Implement average voltage reading.
-    if (voltage < 3.4 && !low_volt_warned) {
-        Serial.printf("Warning! Low Voltage detected, %1.2fV\n", voltage);
-        sd1.append("低压警告，电池电压%1.2fV\n", voltage);
-        low_volt_warned = true;
-
-        if(u8g2) {
-            u8g2->setDrawColor(0); // 用黑色背景擦除一块区域
-            u8g2->drawBox(20, 20, 88, 24);
-            u8g2->setDrawColor(1); // 用白色写字
-            u8g2->drawFrame(20, 20, 88, 24); // 画个框
-            u8g2->setFont(u8g2_font_wqy12_t_gb2312);
-            u8g2->setCursor(35, 38);
-            u8g2->print("电量不足!");
-            u8g2->sendBuffer();
-            delay(2000); // 暂停2秒让你看到
-        }
-
-        buzzer.beep(3, 300, 300);
-
-        low_volt_warned = true; // 锁定，防止一直叫唤
-
-    }
-
-    if (voltage < 3.10) {
-        Serial.println("Critical Voltage! System Halted.");
-        if (u8g2) {
-            u8g2->clearBuffer();
-            u8g2->setDrawColor(0); // 用黑色背景擦除一块区域
-            u8g2->drawBox(20, 20, 88, 24);
-            u8g2->setDrawColor(1); // 用白色写字
-            u8g2->drawFrame(20, 20, 88, 24); // 画个框
-            u8g2->setFont(u8g2_font_wqy12_t_gb2312);
-            u8g2->setCursor(35, 38);
-            u8g2->print("电量耗尽!");
-            u8g2->sendBuffer();
-        }
-
-        sd1.end(); // 安全卸载 SD 卡
-
-        buzzer.hold(3000);
-        
-        // 进入死循环或深度睡眠，不再进行任何操作
-        esp_deep_sleep_start();
-    }
-    u8g2->drawStr(108, 64, buffer);
-    u8g2->sendBuffer();
-}
-
-void showSTR(const String &str) {
-    u8g2->setDrawColor(0);
-    u8g2->drawBox(0, 8, 128, 48);
-    u8g2->setDrawColor(1);
-    // u8g2->setFont(FONT_12_GB2312);
-    u8g2->setFont(u8g2_font_squeezed_b7_tr);
-    pword(str.c_str(), 0, 19);
-    u8g2->sendBuffer();
-}
-
-void showLBJ0(const struct lbj_data &l) {
-    // box y 9->55
-    char buffer[128];
-    u8g2->setDrawColor(0);
-    u8g2->drawBox(0, 8, 128, 48);
-    u8g2->setDrawColor(1);
-    u8g2->setFont(u8g2_font_wqy15_t_custom);
-    u8g2->setCursor(0, 21);
-    u8g2->printf("车  次");
-    u8g2->setFont(u8g2_font_spleen8x16_mu);
-    u8g2->setCursor(50, u8g2->getCursorY());
-    u8g2->printf("%s", l.train);
-    u8g2->setFont(u8g2_font_wqy15_t_custom);
-    u8g2->setCursor(u8g2->getCursorX() + 6, u8g2->getCursorY());
-    if (l.direction == FUNCTION_UP) {
-        u8g2->printf("上行");
-    } else if (l.direction == FUNCTION_DOWN)
-        u8g2->printf("下行");
-    else
-        u8g2->printf("%d", l.direction);
-    u8g2->setCursor(0, 37);
-    u8g2->printf("速  度");
-    u8g2->setCursor(50, u8g2->getCursorY());
-    u8g2->setFont(u8g2_font_spleen8x16_mu);
-    u8g2->printf(" %s ", l.speed);
-    u8g2->setCursor(u8g2->getCursorX() + 7, u8g2->getCursorY());
-    u8g2->setFont(u8g2_font_profont15_mr);
-    u8g2->printf("KM/H");
-    u8g2->setFont(u8g2_font_wqy15_t_custom);
-    // sprintf(buffer, "公里标 %s KM", l.position);
-    u8g2->setCursor(0, 53);
-    u8g2->printf("公里标");
-    u8g2->setCursor(50, u8g2->getCursorY());
-    u8g2->setFont(u8g2_font_spleen8x16_mu);
-    u8g2->printf("%s ", l.position);
-    u8g2->setCursor(u8g2->getCursorX() + 4, u8g2->getCursorY());
-    u8g2->setFont(u8g2_font_profont15_mr);
-    u8g2->printf("KM");
-    // draw RSSI
-    u8g2->setDrawColor(0);
-    u8g2->drawBox(98, 0, 30, 8);
-    u8g2->setDrawColor(1);
-    u8g2->setFont(u8g2_font_squeezed_b7_tr);
-    sprintf(buffer, "%3.1f", rxInfo.rssi);
-    u8g2->drawStr(99, 7, buffer);
-    u8g2->sendBuffer();
-}
-
-void showLBJ1(const struct lbj_data &l) {
-    char buffer[128];
-    u8g2->setDrawColor(0);
-    u8g2->drawBox(0, 8, 128, 48);
-    u8g2->setDrawColor(1);
-    u8g2->setFont(FONT_12_GB2312);
-    // line 1
-    u8g2->setCursor(0, 19);
-    u8g2->printf("车:");
-    u8g2->setCursor(u8g2->getCursorX() + 1, u8g2->getCursorY());
-    u8g2->setFont(u8g2_font_profont12_custom_tf);
-    for (int i = 0, c = 0; i < 6; i++) {
-        if (i == 5) {
-            buffer[c] = 0;
-            break;
-        }
-        if (l.train[i] == ' ')
-            continue;
-        buffer[c] = l.train[i];
-        ++c;
-    }
-    u8g2->printf("%s%s", l.lbj_class, buffer);
-    u8g2->setFont(FONT_12_GB2312);
-    u8g2->setCursor(68, 19);
-    u8g2->printf("速:");
-    u8g2->setCursor(u8g2->getCursorX() + 2, u8g2->getCursorY());
-    u8g2->setFont(u8g2_font_profont12_custom_tf);
-    u8g2->printf("%s", l.speed);
-    u8g2->setCursor(u8g2->getCursorX(), u8g2->getCursorY());
-    u8g2->printf("KM/H");
-    u8g2->setFont(FONT_12_GB2312);
-    // line 2
-    u8g2->setCursor(0, 31);
-    u8g2->printf("线:");
-    u8g2->setCursor(u8g2->getCursorX() + 2, u8g2->getCursorY());
-    u8g2->printf("%s", l.route_utf8);
-    u8g2->drawBox(67, 21, 13, 12);
-    u8g2->setDrawColor(0);
-    if (l.direction == FUNCTION_UP)
-        u8g2->drawUTF8(68, 31, "上");
-    else if (l.direction == FUNCTION_DOWN)
-        u8g2->drawUTF8(68, 31, "下");
-    else {
-        sprintf(buffer, "%d", l.direction);
-        u8g2->drawStr(71, 31, buffer);
-    }
-    u8g2->setDrawColor(1);
-    u8g2->setCursor(84, 31);
-    u8g2->setFont(u8g2_font_profont12_custom_tf);
-    u8g2->printf("%s", l.position);
-    u8g2->setCursor(u8g2->getCursorX(), u8g2->getCursorY());
-    u8g2->printf("K");
-    u8g2->setFont(FONT_12_GB2312);
-    // line 3
-    u8g2->setCursor(0, 43);
-    u8g2->printf("号:");
-    u8g2->setCursor(u8g2->getCursorX() + 1, u8g2->getCursorY());
-    u8g2->setFont(u8g2_font_profont12_custom_tf);
-    u8g2->printf("%s", l.loco);
-    if (String(l.loco) != "<NUL>" && l.info2_hex.length() > 14 && l.info2_hex[12] == '3') {
-        if (l.info2_hex[13] == '1')
-            u8g2->printf("A");
-        else if (l.info2_hex[13] == '2')
-            u8g2->printf("B");
-    }
-    u8g2->setFont(FONT_12_GB2312);
-    if (l.loco_type.length())
-        u8g2->drawUTF8(72, 43, l.loco_type.c_str());
-    // line 4
-    String pos;
-    if (l.pos_lat_deg[1] && l.pos_lat_min[1]) {
-        sprintf(buffer, "%s°%s'", l.pos_lat_deg, l.pos_lat_min);
-        pos += String(buffer);
-    } else {
-        sprintf(buffer, "%s ", l.pos_lat);
-        pos += String(buffer);
-    }
-    if (l.pos_lon_deg[1] && l.pos_lon_min[1]) {
-        sprintf(buffer, "%s°%s'", l.pos_lon_deg, l.pos_lon_min);
-        pos += String(buffer);
-    } else {
-        sprintf(buffer, "%s ", l.pos_lon);
-        pos += String(buffer);
-    }
-//    sprintf(buffer,"%s°%s'%s°%s'",l.pos_lat_deg,l.pos_lat_min,l.pos_lon_deg,l.pos_lon_min);
-    u8g2->setFont(u8g2_font_profont12_custom_tf);
-    u8g2->drawUTF8(0, 54, pos.c_str());
-    // draw RSSI
-    u8g2->setDrawColor(0);
-    u8g2->drawBox(98, 0, 30, 8);
-    u8g2->setDrawColor(1);
-    u8g2->setFont(u8g2_font_squeezed_b7_tr);
-    sprintf(buffer, "%3.1f", rxInfo.rssi);
-    u8g2->drawStr(99, 7, buffer);
-    u8g2->sendBuffer();
-}
-
-void showLBJ2(const struct lbj_data &l) {
-    char buffer[128];
-    u8g2->setDrawColor(0);
-    u8g2->drawBox(0, 8, 128, 48);
-    u8g2->setDrawColor(1);
-    u8g2->setFont(u8g2_font_wqy15_t_custom);
-    u8g2->setCursor(0, 23);
-    u8g2->printf("当前时间");
-    u8g2->setFont(u8g2_font_spleen8x16_mu);
-    u8g2->setCursor(u8g2->getCursorX() + 3, u8g2->getCursorY() - 1);
-    u8g2->printf("%s ", l.time);
-    // draw RSSI
-    u8g2->setDrawColor(0);
-    u8g2->drawBox(98, 0, 30, 8);
-    u8g2->setDrawColor(1);
-    u8g2->setFont(u8g2_font_squeezed_b7_tr);
-    sprintf(buffer, "%3.1f", rxInfo.rssi);
-    u8g2->drawStr(99, 7, buffer);
-    u8g2->sendBuffer();
-}
-
-#endif
 
 void dualPrintf(bool time_stamp, const char *format, ...) { // Generated by ChatGPT.
     char buffer[256]; // 创建一个足够大的缓冲区来容纳格式化后的字符串
@@ -638,16 +297,16 @@ void setup() {
 #ifdef HAS_RTC
     if (rtc.begin()) { //先判断RTC硬件是否存在且就绪
         time_info = rtcLibtoC(rtc.now());
-        Serial.println(&time_info, "[eRTC] RTC Time %Y-%m-%d %H:%M:%S ");
+        debugLogInfoPrintln(&time_info, "[eRTC] RTC Time %Y-%m-%d %H:%M:%S ");
         timeSync(time_info); // sync system time from rtc
-        Serial.printf("SYS Time %s\n", fmtime(time_info));
+        debugLogInfo("SYS Time %s\n", fmtime(time_info));
     } else {
         // 若硬件接触不良或未搭载，打印警告，不强行同步错误时间
-        Serial.println("[eRTC] ERROR: RTC Hardware not found! Skipped.");
+        debugLogErrorPrintln("[eRTC] ERROR: RTC Hardware not found! Skipped.");
     }
 #endif
 
-    Serial.printf("RST: %s\n", printResetReason(reset_reason).c_str());
+    debugLogInfo("RST: %s\n", printResetReason(reset_reason).c_str());
     if (have_sd) {
         sd1.begin("/LOGTEST");
         sd1.beginCSV("/CSVTEST");
@@ -761,7 +420,7 @@ SmatPhone注释结束 */
 
     // 尝试自动连接
     if (wm.autoConnect("LBJ-Receiver")) {
-        Serial.println("WiFi 连接成功 (Saved Creds)");
+        debugLogInfoPrintln("WiFi 连接成功 (Saved Creds)");
         if (u8g2) {
             u8g2->clearBuffer();
             u8g2->setCursor(0, 40);
@@ -775,7 +434,7 @@ SmatPhone注释结束 */
     } 
     else {
         // 没连上，后台 AP 已开启
-        Serial.println("WiFi 连接失败，后台 AP 已开启");
+        debugLogErrorPrintln("WiFi 连接失败，后台 AP 已开启");
         is_ap_active = true;
         ap_start_time = millis(); 
         wifi_msg_shown = true;   
@@ -800,11 +459,11 @@ SmatPhone注释结束 */
     dualPrint("[SX1276] Initializing ... ");
     int state = initPager();
     if (state == RADIOLIB_ERR_NONE) {
-        Serial.println(F("success."));
-        Serial.printf("[SX1276] Actual Frequency %f MHz, ppm %.1f\n", actualFreq(ppm), ppm);
+        debugLogInfoPrintln(F("success."));
+        debugLogInfo("[SX1276] Actual Frequency %f MHz, ppm %.1f\n", actualFreq(ppm), ppm);
     } else {
-        Serial.print(F("failed, code "));
-        Serial.println(state);
+        debugLogErrorPrint(F("failed, code "));
+        debugLogErrorPrintln(state);
         while (true);
     }
 
@@ -817,7 +476,7 @@ SmatPhone注释结束 */
     // wdt_timer = millis64();
 
     digitalWrite(BOARD_LED, LED_OFF);
-    Serial.printf("Booting time %llu ms\n", millis64() - runtime_timer);
+    debugLogInfo("Booting time %llu ms\n", millis64() - runtime_timer);
     sd1.append("启动用时 %llu ms\n", millis64() - runtime_timer);
     runtime_timer = 0;
 
@@ -829,7 +488,7 @@ SmatPhone注释结束 */
         u8g2->setCursor(0, 52);
         u8g2->print("等待LBJ信号中...");
         u8g2->sendBuffer();
-        Serial.printf("Mem left: %d Bytes\n", esp_get_free_heap_size());
+        debugLogInfo("Mem left: %d Bytes\n", esp_get_free_heap_size());
     }
 
     // test stuff
@@ -862,10 +521,10 @@ void handleTelnetCall() {
         int16_t state = radio.setFrequency(actualFreq(ppm));
         if (state == RADIOLIB_ERR_NONE) {
             telnet.printf("> Actual Frequency %f MHz\n", actualFreq(ppm));
-            Serial.printf("[Telnet] > Actual Frequency %f MHz\n", actualFreq(ppm));
+            debugLogInfo("[Telnet] > Actual Frequency %f MHz\n", actualFreq(ppm));
         } else {
             telnet.printf("> Failure, Code %d\n", state);
-            Serial.printf("[Telnet] > Failure, Code %d\n", state);
+            debugLogError("[Telnet] > Failure, Code %d\n", state);
         }
         telnet.printf("> ppm set to %.f\n", ppm);
         tel_set_ppm = false;
@@ -873,36 +532,14 @@ void handleTelnetCall() {
     }
 }
 
-void handleSync() {
-    if (pager.gotSyncState()) {
-        // if (!bandwidth_altered) {
-        //     int16_t state = radio.swapRxBandwidth(12.5);
-        //     Serial.printf("[D] Channelize, code %d\n",state);
-        //     radio.restartReceive(true);
-        //     bandwidth_altered = true;
-        // }
-//        sd1.append("[PGR][DEBUG] SYNC DETECTED.\n");
-        if (rxInfo.cnt < 5 && (rxInfo.timer == 0 || esp_timer_get_time() - rxInfo.timer < 11000)) {
-            float rssi = radio.getRSSI(false, true);
-            rxInfo.timer = esp_timer_get_time();
-            // rxInfo.rssi += rssi;
-            rssi_cache += rssi;
-            rxInfo.cnt++;
-            Serial.printf("[D] RXI %.2f\n", rssi_cache / (float) rxInfo.cnt);
-        }
-        if (rxInfo.fer == 0)
-            rxInfo.fer = radio.getFrequencyError();
-    }
-}
-
 void handleTelnet() {
     if (isConnected() && !telnet_online) {
         ip = WiFi.localIP();
-        Serial.printf("WIFI Connection to %s established.\n", wifiSSID.c_str());
-        Serial.print("[Telnet] ");
-        Serial.print(ip);
-        Serial.print(":");
-        Serial.println(port);
+        debugLogInfo("WIFI Connection to %s established.\n", wifiSSID.c_str());
+        debugLogInfoPrint("[Telnet] ");
+        debugLogInfoPrint(ip);
+        debugLogInfoPrint(":");
+        debugLogInfoPrintln(port);
         setupTelnet();
     }
     telnet.loop();
@@ -919,14 +556,14 @@ void checkNetwork() {
         telnet_online = false;
         WiFi.disconnect();
         WiFiClass::mode(WIFI_OFF);
-        Serial.println("WIFI off after 30 minutes without connection.");
+        debugLogInfoPrintln("WIFI off after 30 minutes without connection.");
         no_wifi = true;
     }
 
     if (ip_last != WiFi.localIP()) {
-        Serial.print("Local IP ");
-        Serial.print(WiFi.localIP());
-        Serial.print("\n");
+        debugLogInfoPrint("Local IP ");
+        debugLogInfoPrint(WiFi.localIP());
+        debugLogInfoPrint("\n");
     }
     ip_last = WiFi.localIP();
 }
@@ -985,7 +622,7 @@ void loop() {
         revertFrequency();
         car_fer_last = 0;
         car_timer = 0;
-        Serial.println("[D] CARRIER TIMEOUT.");
+        debugLogVerbose("[D] CARRIER TIMEOUT.\n");
     }
 
     // Handle preamble timeout.
@@ -996,8 +633,10 @@ void loop() {
             i = 0;
         }
         prb_timer = 0;
-        Serial.println("[D] PREAMBLE TIMEOUT.");
+        debugLogVerbose("[D] PREAMBLE TIMEOUT.\n");
     }
+
+    processPendingDisplayUpdate();
 
     // if task complete, de-initialize
     if (fd_state == TASK_DONE) {
@@ -1096,7 +735,7 @@ void loop() {
         fd_state = TASK_TERMINATED;
         dualPrintln("[Pager] FD_TASK Timeout, waiting for task completion.");
         sd1.append("[Pager] FD_TASK Timeout, waiting for task completion.\n");
-        Serial.printf("LED LOW [%llu]\n", millis64() - format_task_timer);
+        debugLogVerbose("LED LOW [%llu]\n", millis64() - format_task_timer);
         digitalWrite(BOARD_LED, LED_OFF);
         led_timer = 0;
         changeCpuFreq(240);
@@ -1154,14 +793,14 @@ void loop() {
         // struct lbj_data lbj;
         // pd = new PagerClient::pocsag_data[POCDAT_SIZE];
 
-        Serial.printf("[D] Prb_count %d\n", prb_count);
-        Serial.printf("[D] Car_count %d\n", car_count);
+        debugLogVerbose("[D] Prb_count %d\n", prb_count);
+        debugLogVerbose("[D] Car_count %d\n", car_count);
         if (prb_count >= 32)
             prb_count = 31;
         if (prb_count > 0)
             rxInfo.fer = fers[prb_count - 1];
         for (int i = 0; i < prb_count; ++i) {
-            Serial.printf("[D] Fer %.2f Hz\n", fers[i]);
+            debugLogVerbose("[D] Fer %.2f Hz\n", fers[i]);
             fers[i] = 0;
         }
         // Serial.printf("[D] Fer %.2f Hz\n", fer);
@@ -1205,13 +844,13 @@ void loop() {
                         break;
                     }
                     fd_state = TASK_INIT;
-                    Serial.printf("[Pager] FTask failed memory allocation, error %d, mem left %d B, retry %d\n",
+                    debugLogError("[Pager] FTask failed memory allocation, error %d, mem left %d B, retry %d\n",
                                   x_ret1, esp_get_free_heap_size(), i);
                     sd1.append("[Pager] FTask failed memory allocation, error %d, mem left %d B, retry %d\n",
                                x_ret1, esp_get_free_heap_size(), i);
                 }
                 if (x_ret1 != pdPASS) {
-                    Serial.printf("Mem left: %d Bytes\n", esp_get_free_heap_size());
+                    debugLogError("Mem left: %d Bytes\n", esp_get_free_heap_size());
                     dualPrintf(true, "[Pager] Format task memory allocation failure\n");
                     sd1.append("[Pager] Format task memory allocation failure, Mem left %d Bytes\n",
                                esp_get_free_heap_size());
@@ -1247,192 +886,13 @@ void loop() {
         }
     }
 
+    processPendingDisplayUpdate();
     buzzer.update();
-}
-
-void revertFrequency() {
-    if (actual_frequency != freq_last) {
-        actual_frequency = freq_last;
-        int state = radio.setFrequency(actual_frequency);
-        if (state != RADIOLIB_ERR_NONE) {
-            Serial.printf("[D] Revert freq failed %d\n", state);
-        } else {
-            Serial.printf("[D] Revert to last freq %f MHz, ppm %.2f\n", actual_frequency, getBias(actual_frequency));
-        }
-    }
-}
-
-void handleCarrier() {
-    if (pager.gotCarrierState() && !pager.gotPreambleState() && !pager.gotSyncState() && freq_correction &&
-        prb_timer == 0) {
-        if (car_count == 0)
-            car_timer = millis64();
-        ++car_count;
-        if (car_count < 64) {
-            float fei = radio.getFrequencyError();
-            // Serial.printf("[D] Carrier FEI %.2f Hz, count %d\n",fei,car_count);
-            if (abs(fei) > 1000.0 && car_count != 1 &&
-                abs(fei - car_fer_last) < 500) {
-                // Perform frequency correction
-                auto target_freq = (float) (actual_frequency + fei * 1e-6);
-                int state = radio.setFrequency(target_freq);
-                if (state != RADIOLIB_ERR_NONE) {
-                    Serial.printf("[D][C] Freq Alter failed %d, target freq %f\n", state, target_freq);
-                    sd1.append("[D][C] Freq Alter failed %d, target freq %f\n", state, target_freq);
-                } else {
-                    actual_frequency = target_freq;
-                    Serial.printf("[D][C] Freq Altered %f MHz, FEI %.2f Hz, PPM %.2f\n", actual_frequency, fei,
-                                  getBias(actual_frequency));
-                }
-            }
-            car_fer_last = fei;
-        }
-    }
-}
-
-void handlePreamble() {
-    if (pager.gotPreambleState() && !pager.gotSyncState() && freq_correction) {
-        if (prb_count == 0)
-            prb_timer = millis64();
-        // if (millis64() - prb_timer > 500) {
-        //     prb_count = 0;
-        //     if (actual_frequency != freq_last) {
-        //         actual_frequency = freq_last;
-        //         int state = radio.setFrequency(actual_frequency);
-        //         if (state != RADIOLIB_ERR_NONE) {
-        //             Serial.printf("[D] Freq Alter failed %d\n", state);
-        //         }
-        //     }
-        //     for (auto &i: fers) {
-        //         i = 0;
-        //     }
-        // }
-        ++prb_count;
-        if (prb_count < 32) {
-            // todo: Implement automatic bandwidth adjustment.
-            // if (prb_count > 2 && !bandwidth_altered) {
-            //     int16_t state = radio.swapRxBandwidth(12.5);
-            //     Serial.printf("[D] Bandwidth to 12.5,code %d\n",state);
-            //     radio.restartReceive(true);
-            //     bandwidth_altered = true;
-            // }
-            // else if (prb_count > 6 && bandwidth_altered) {
-            //     radio.swapRxBandwidth(12.5);
-            //     bandwidth_altered = false;
-            // }
-            // radio.swapRxBandwidth(12.5);
-            fers[prb_count - 1] = radio.getFrequencyError();
-            if (abs(fers[prb_count - 1]) > 1000.0 && prb_count != 1 &&
-                abs(fers[prb_count - 1] - fers[prb_count - 2]) < 500) {
-                // Perform frequency correction
-                auto target_freq = (float) (actual_frequency + fers[prb_count - 1] * 1e-6);
-                int state = radio.setFrequency(target_freq);
-                if (state != RADIOLIB_ERR_NONE) {
-                    Serial.printf("[D][P] Freq Alter failed %d, target freq %f\n", state, target_freq);
-                    sd1.append("[D][P] Freq Alter failed %d, target freq %f\n", state, target_freq);
-                } else {
-                    actual_frequency = target_freq;
-                    Serial.printf("[D][P] Freq Altered %f MHz, FEI %.2f Hz, PPM %.2f\n", actual_frequency,
-                                  fers[prb_count - 1], getBias(actual_frequency));
-                }
-            }
-        }
-    }
-}
-
-void getCoreFreq(void *pVoid) {
-    Serial.printf("Core %d Frequency %d MHz\n", xPortGetCoreID(), ets_get_cpu_frequency());
-    vTaskDelete(nullptr);
-}
-
-void handleSerialInput() {
-    if (Serial.available()) {
-        String in = Serial.readStringUntil('\r');
-        if (in == "ping")
-            Serial.println("$ Pong");
-        else if (in == "task state")
-            Serial.println("$ Task state " + String(fd_state));
-        else if (in == "rtc") {
-#ifdef HAS_RTC
-            // rtc.getDateTime(time_info);
-            // DateTime now = rtc.now();
-            time_info = rtcLibtoC(rtc.now());
-            // float temp = rtc.getTemperature();
-            Serial.print(&time_info, "$ [eRTC] %Y-%m-%d %H:%M:%S ");
-            // Serial.printf("Temp: %.2f °C\n", temp);
-#endif
-        } else if (in == "time") {
-            getLocalTime(&time_info, 1);
-            Serial.printf("$ SYS Time %s, Up time %llu ms (%s)\n", fmtime(time_info), millis64(), fmtms(millis64()));
-        } else if (in == "cd") {
-            if (have_cd)
-                Serial.println("$ Core dump exported.");
-            else
-                Serial.println("$ No core dump.");
-        } else if (in == "sd end") {
-            if (!sd1.status())
-                Serial.println("$ [SDLOG] No SD.");
-            else {
-                sd1.append("[SDLOG] SD卡将被卸载\n");
-                sd1.end();
-                Serial.println("$ [SDLOG] SD end.");
-            }
-        } else if (in == "sd begin") {
-            if (sd1.status())
-                Serial.println("$ End SD First.");
-            else {
-                SD_LOG::reopenSD();
-                sd1.begin("/LOGTEST");
-                sd1.beginCSV("/CSVTEST");
-                sd1.append("[SDLOG] SD卡已重新挂载\n");
-                Serial.println("$ [SDLOG] SD reopen.");
-            }
-        } else if (in == "mem") {
-            Serial.printf("$ Mem left: %d Bytes\n", esp_get_free_heap_size());
-        } else if (in == "rst") {
-            esp_reset_reason_t reason = esp_reset_reason();
-            Serial.printf("$ RST: %s\n", printResetReason(reason).c_str());
-        } else if (in == "ppm") {
-            if (runtime_timer == 0 && !pager.gotSyncState()) {
-                ppm = 3;
-                int16_t state = radio.setFrequency(actualFreq(ppm));
-                if (state == RADIOLIB_ERR_NONE)
-                    Serial.printf("$ Actual Frequency %f MHz\n", actualFreq(ppm));
-                else
-                    Serial.printf("$ Failure, Code %d\n", state);
-            } else {
-                Serial.println("$ Unable to change frequency due to occupation");
-                if (pager.available())
-                    Serial.println("$ pager.available == true");
-                if (runtime_timer)
-                    Serial.printf("$ runtime_timer = %llu, running %llu\n", runtime_timer, millis64() - runtime_timer);
-            }
-        } else if (in == "ppm read") {
-            Serial.printf("$ ppm %.1f\n", ppm);
-        } else if (in == "afc off") {
-            prb_count = 0;
-            prb_timer = 0;
-            car_count = 0;
-            car_timer = 0;
-            freq_correction = false;
-            Serial.println("$ Frequency Correction Disabled");
-        } else if (in == "afc on") {
-            freq_correction = true;
-            Serial.println("$ Frequency Correction Enabled");
-        } else if (in == "rssi") {
-            Serial.printf("$ RSSI %3.2f dBm.\n", radio.getRSSI(false, true));
-        } else if (in == "gain") {
-            Serial.printf("$ Gain Pos %d \n", radio.getGain());
-        } else if (in == "cpu") {
-            xTaskCreatePinnedToCore(getCoreFreq, "get_freq", 2048, nullptr,
-                                    1, nullptr, 0);
-            Serial.printf("Core %d Frequency %d MHz\n", xPortGetCoreID(), ets_get_cpu_frequency());
-        }
-    }
+    flushDecodedCsvOutputIfDue();
 }
 
 void initFmtVars() {
-    Serial.printf("[Pager] Processing time %llu ms.\n", millis64() - runtime_timer);
+    debugLogVerbose("[Pager] Processing time %llu ms.\n", millis64() - runtime_timer);
     runtime_timer = 0;
     rxInfo.rssi = 0;
     rxInfo.fer = 0;
@@ -1456,62 +916,12 @@ void formatDataTask(void *pVoid) {
 
     buzzer.notifySignal();
 
-    for (auto &i: db->pocsagData) {
-        if (i.is_empty)
-            continue;
-        Serial.printf("[D-pDATA] %d/%d: %s\n", i.addr, i.func, i.str.c_str());
-        sd1.append(2, "[D-pDATA] %d/%d: %s\n", i.addr, i.func, i.str.c_str());
-        db->str = db->str + "  " + i.str;
-    }
+    collectRawPagerData(*db, runtime_timer);
+    decodeLbjData(*db, runtime_timer);
+    dispatchDecodedOutputs(*db, rxInfo, runtime_timer);
+    requestDecodedDisplayUpdate(db->lbjData, runtime_timer);
 
-    // Serial.printf("[FD-Task] Stack High Mark pDATA %u\n", uxTaskGetStackHighWaterMark(nullptr));
-    sd1.append(2, "原始数据输出完成，用时[%llu]\n", millis64() - runtime_timer);
-    Serial.printf("decode complete.[%llu]", millis64() - runtime_timer);
-    readDataLBJ(db->pocsagData, &db->lbjData);
-    sd1.append(2, "LBJ读取完成，用时[%llu]\n", millis64() - runtime_timer);
-    Serial.printf("Read complete.[%llu]", millis64() - runtime_timer);
-    // Serial.printf("[FD-Task] Stack High Mark rLBJ %u\n", uxTaskGetStackHighWaterMark(nullptr));
-
-    printDataSerial(db->pocsagData, db->lbjData, rxInfo);
-    sd1.append(2, "串口输出完成，用时[%llu]\n", millis64() - runtime_timer);
-    Serial.printf("SPRINT complete.[%llu]", millis64() - runtime_timer);
-
-    // sd1.disableSizeCheck();
-    appendDataLog(db->pocsagData, db->lbjData, rxInfo);
-    Serial.printf("sdprint complete.[%llu]", millis64() - runtime_timer);
-    appendDataCSV(db->pocsagData, db->lbjData, rxInfo);
-    Serial.printf("csvprint complete.[%llu]", millis64() - runtime_timer);
-    // sd1.enableSizeCheck();
-
-    printDataTelnet(db->pocsagData, db->lbjData, rxInfo);
-    Serial.printf("telprint complete.[%llu]", millis64() - runtime_timer);
-    // Serial.printf("[FD-Task] Stack High Mark TRI-OUT %u\n", uxTaskGetStackHighWaterMark(nullptr));
-// Serial.printf("type %d \n",lbj.type);
-
-#ifdef HAS_DISPLAY
-    if (fd_state != TASK_TERMINATED) {
-        fd_state = TASK_RUNNING_SCREEN;
-    }
-    if (u8g2) {
-#ifdef HAS_OLED_TIMEOUT
-        if (oled_off) {
-            oled_off = false;
-            u8g2->setPowerSave(false);
-            u8g2->clearBuffer();
-            updateInfo();
-        }
-#endif
-        if (db->lbjData.type == 0)
-            showLBJ0(db->lbjData);
-        else if (db->lbjData.type == 1) {
-            showLBJ1(db->lbjData);
-        } else if (db->lbjData.type == 2) {
-            showLBJ2(db->lbjData);
-        }
-        Serial.printf("Complete u8g2 [%llu]\n", millis64() - runtime_timer);
-    }
-#endif
-    Serial.printf("[FD-Task] Stack High Mark %u\n", uxTaskGetStackHighWaterMark(nullptr));
+    debugLogVerbose("[FD-Task] Stack High Mark %u\n", uxTaskGetStackHighWaterMark(nullptr));
     sd1.append(2, "任务堆栈标 %u\n", uxTaskGetStackHighWaterMark(nullptr));
     // sd1.append("[FD-Task] Stack High Mark %u\n", uxTaskGetStackHighWaterMark(nullptr));
     sd1.append(2, "格式化输出任务完成，用时[%llu]\n", millis64() - runtime_timer);
@@ -1524,8 +934,8 @@ void simpleFormatTask() { // only output initially phrased data in case of memor
     for (auto &i: db->pocsagData) {
         if (i.is_empty)
             continue;
-        Serial.printf("[D-pDATA] %d/%d: %s\n", i.addr, i.func, i.str.c_str());
-        sd1.append("[D-pDATA] %d/%d: %s\n", i.addr, i.func, i.str.c_str());
+        debugLogVerbose("[D-pDATA] %d/%d: %s\n", i.addr, i.func, i.str.c_str());
+        debugLogVerboseSd("[D-pDATA] %d/%d: %s\n", i.addr, i.func, i.str.c_str());
         // db->str = db->str + "  " + i.str;
         db->str += String(i.addr) + "/" + String(i.func) + ":" + i.str + "\n ";
     }
