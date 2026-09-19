@@ -7,27 +7,115 @@
 #include "debug_log.hpp"
 #include "runtime_config.hpp"
 #include "task_state.hpp"
+#include "display_power.hpp"
+#include "runtime_settings.hpp"
+#include "use_mode.hpp"
+#include "recording_health.hpp"
+#include <atomic>
 
 #include <esp_sleep.h>
 
 extern bool low_volt_warned;
 extern bool oled_off;
 extern struct rx_info rxInfo;
-extern task_states fd_state;
 
 static volatile bool pendingDecodedDisplayUpdate = false;
 static struct lbj_data pendingDecodedDisplayData;
 static uint64_t pendingDecodedDisplayRuntimeStartMs = 0;
 static bool hasDecodedDisplayRefresh = false;
 static uint32_t lastDecodedDisplayRefreshMs = 0;
+static bool menuDisplayActive = false;
+static bool historyDisplayActive = false;
+static bool mainScreenDirty = false;
+static std::atomic<bool> receivedDisplayActivity{false};
+static float displayedRssi = 0;
+static char displayedTrainKey[9] = {};
 
-void requestDecodedDisplayUpdate(const struct lbj_data &data, uint64_t runtimeStartMs) {
+// 9x8 warning triangle with an exclamation mark; bottom-row icon slot x=18..26.
+static void sendStatusBuffer() {
+    if (!u8g2) return;
+    uint8_t saved[9];
+    uint8_t *pixels = u8g2->getBufferPtr() + 7 * 128 + 18;
+    const bool warning = !menuDisplayActive && !historyDisplayActive && recordingAlertVisible();
+    if (warning) {
+        static const uint16_t rows[8] = {0x010, 0x028, 0x028, 0x054, 0x054, 0x082, 0x092, 0x1ff};
+        for (uint8_t x = 0; x < 9; ++x) {
+            saved[x] = pixels[x]; pixels[x] = 0;
+            for (uint8_t y = 0; y < 8; ++y) if (rows[y] & (1U << x)) pixels[x] |= 1U << y;
+        }
+    }
+    u8g2->sendBuffer();
+    if (warning) for (uint8_t x = 0; x < 9; ++x) pixels[x] = saved[x];
+}
+void refreshRecordingAlert() {
+    static bool previousVisible = false;
+    if (!u8g2 || oled_off || menuDisplayActive || historyDisplayActive) { previousVisible = false; return; }
+    const bool visible = recordingAlertVisible();
+    if (visible != previousVisible) { sendStatusBuffer(); previousVisible = visible; }
+}
+
+void requestMainDisplayRefresh() { mainScreenDirty = true; }
+void resetDecodedDisplay() {
+    pendingDecodedDisplayUpdate = false;
+    hasDecodedDisplayRefresh = false;
+    receivedDisplayActivity = false;
+    mainScreenDirty = true;
+}
+
+void setMenuDisplayActive(bool active) {
+    if (menuDisplayActive && !active) {
+        mainScreenDirty = true;
+        displayActivity(true);
+    }
+    menuDisplayActive = active;
+}
+
+bool isMenuDisplayActive() {
+    return menuDisplayActive;
+}
+
+void setHistoryDisplayActive(bool active) {
+    if (historyDisplayActive && !active) {
+        mainScreenDirty = true;
+        displayActivity(true);
+    }
+    historyDisplayActive = active;
+}
+
+bool isHistoryDisplayActive() {
+    return historyDisplayActive;
+}
+
+void requestDecodedDisplayUpdate(const struct lbj_data &data, uint64_t runtimeStartMs, float rssi, bool arrival, const char *trainKey) {
     pendingDecodedDisplayData = data;
     pendingDecodedDisplayRuntimeStartMs = runtimeStartMs;
     pendingDecodedDisplayUpdate = true;
+    displayedRssi = rssi;
+    snprintf(displayedTrainKey, sizeof(displayedTrainKey), "%s", trainKey ? trainKey : "");
+    // The mode queue owns its dwell timer; a previous frame must not delay a new queued car.
+    if (!arrival) lastDecodedDisplayRefreshMs = millis() - OLED_DECODED_DISPLAY_MIN_INTERVAL_MS;
+    if (arrival) receivedDisplayActivity.store(true);
 }
 
 void processPendingDisplayUpdate() {
+    if (isRideMode()) return;
+    if (receivedDisplayActivity.exchange(false))
+        displayActivity(runtimeSettings().display.wakeOnArrival);
+    // Retain the newest record while asleep; cached redraws are not new arrivals.
+    if (oled_off || menuDisplayActive || historyDisplayActive)
+        return;
+
+    if (mainScreenDirty && u8g2) {
+        mainScreenDirty = false;
+        showInitComp();
+        if (hasDecodedDisplayRefresh) {
+            pendingDecodedDisplayUpdate = true;
+            hasDecodedDisplayRefresh = false; // Render the cached record immediately on return.
+        } else if (!pendingDecodedDisplayUpdate) {
+            showWaitingScreen();
+        }
+    }
+
     if (!pendingDecodedDisplayUpdate)
         return;
 
@@ -39,20 +127,7 @@ void processPendingDisplayUpdate() {
 
     pendingDecodedDisplayUpdate = false;
 
-    const task_states previousState = fd_state;
-    if (fd_state != TASK_TERMINATED) {
-        fd_state = TASK_RUNNING_SCREEN;
-    }
-
     if (u8g2) {
-#ifdef HAS_OLED_TIMEOUT
-        if (oled_off) {
-            oled_off = false;
-            u8g2->setPowerSave(false);
-            u8g2->clearBuffer();
-            updateInfo();
-        }
-#endif
         if (pendingDecodedDisplayData.type == 0)
             showLBJ0(pendingDecodedDisplayData);
         else if (pendingDecodedDisplayData.type == 1) {
@@ -65,9 +140,6 @@ void processPendingDisplayUpdate() {
         hasDecodedDisplayRefresh = true;
     }
 
-    if (previousState != TASK_TERMINATED) {
-        fd_state = previousState;
-    }
 }
 
 static void pword(const char *msg, int xloc, int yloc) {
@@ -96,74 +168,91 @@ static void pword(const char *msg, int xloc, int yloc) {
     }
 }
 
+static void drawStorageNetworkIcons(bool storage, bool network) {
+    // Fixed symbols; a diagonal marks an unmounted card or disconnected Wi-Fi.
+    u8g2->drawFrame(0, 57, 6, 7);
+    u8g2->drawHLine(1, 59, 4);
+    u8g2->drawVLine(9, 62, 2);
+    u8g2->drawVLine(11, 60, 4);
+    u8g2->drawVLine(13, 58, 6);
+    for (uint8_t i = 0; i < 7; ++i) {
+        if (!storage) u8g2->drawPixel(6 - i, 57 + i);
+        if (!network) u8g2->drawPixel(8 + i, 57 + i);
+    }
+}
+
+// Exclusive slots: icons [0,15), warning [18,27), bias [28,91), battery [98,128).
+// Keep numeric fields intact; overflow is explicit rather than a clipped value.
+static void drawStatusNumber(uint8_t left, uint8_t right, const char *value) {
+    const char *fitted = u8g2->getStrWidth(value) <= right - left ? value : "--";
+    u8g2->drawStr(right - u8g2->getStrWidth(fitted), 64, fitted);
+}
+
+static void drawMainStatusBar(float batteryVoltage) {
+    u8g2->setFont(u8g2_font_squeezed_b7_tr);
+    u8g2->setFontMode(1);
+    u8g2->setFontPosBaseline();
+    u8g2->setDrawColor(0);
+    u8g2->drawBox(0, 56, 128, 8);
+    u8g2->setDrawColor(1);
+    drawStorageNetworkIcons(have_sd, WiFi.status() == WL_CONNECTED);
+    char number[32];
+    snprintf(number, sizeof(number), "%.1f", getBias(actual_frequency));
+    drawStatusNumber(28, 91, number);
+    snprintf(number, sizeof(number), "%.2fV", batteryVoltage);
+    drawStatusNumber(98, 128, number);
+}
+
+void showWaitingScreen() {
+    if (!u8g2) return;
+    showInitComp();
+    u8g2->setFont(FONT_12_GB2312);
+    u8g2->drawUTF8(0, 52, "等待列车信号");
+    sendStatusBuffer();
+}
+
 void showInitComp() {
+    u8g2->setDrawColor(1);
+    u8g2->setFontMode(1);
+    u8g2->setFontPosBaseline();
     u8g2->clearBuffer();
     u8g2->setFont(u8g2_font_squeezed_b7_tr);
 
-    String ipa = WiFi.localIP().toString();
-    u8g2->drawStr(0, 64, ipa.c_str());
-    if (have_sd && WiFiClass::status() == WL_CONNECTED)
-        u8g2->drawStr(89, 64, "D");
-    else if (have_sd)
-        u8g2->drawStr(89, 64, "L");
-    else if (WiFiClass::status() == WL_CONNECTED)
-        u8g2->drawStr(89, 64, "N");
-
     char buffer[32];
-    sprintf(buffer, "%2u", ets_get_cpu_frequency() / 10);
-    u8g2->drawStr(96, 64, buffer);
-    sprintf(buffer, "%1.2f", battery.readVoltage() * 2);
-    u8g2->drawStr(108, 64, buffer);
+    drawMainStatusBar(battery.readVoltage() * 2);
 
-    if (!getLocalTime(&time_info, 0))
-        u8g2->drawStr(0, 7, "NO SNTP");
+    if (!getValidLocalTime(&time_info))
+        u8g2->drawStr(0, 7, "---- -- -- --:--");
     else {
         sprintf(buffer, "%d-%02d-%02d %02d:%02d", time_info.tm_year + 1900, time_info.tm_mon + 1, time_info.tm_mday,
                 time_info.tm_hour, time_info.tm_min);
         u8g2->drawStr(0, 7, buffer);
     }
-    u8g2->sendBuffer();
+    sendStatusBuffer();
 }
 
 void updateInfo() {
+    if (menuDisplayActive || historyDisplayActive)
+        return;
+
     char buffer[32];
+    if (!isRideMode()) {
     u8g2->setDrawColor(0);
     u8g2->setFont(u8g2_font_squeezed_b7_tr);
     u8g2->drawBox(0, 0, 97, 8);
     u8g2->setDrawColor(1);
-    if (!getLocalTime(&time_info, 0))
-        u8g2->drawStr(0, 7, "NO SNTP");
+    if (!getValidLocalTime(&time_info))
+        u8g2->drawStr(0, 7, "---- -- -- --:--");
     else {
         sprintf(buffer, "%d-%02d-%02d %02d:%02d", time_info.tm_year + 1900, time_info.tm_mon + 1, time_info.tm_mday,
                 time_info.tm_hour, time_info.tm_min);
         u8g2->drawStr(0, 7, buffer);
     }
 
-    u8g2->setDrawColor(0);
-    u8g2->drawBox(0, 56, 128, 8);
-    u8g2->setDrawColor(1);
-    if (!no_wifi) {
-        String ipa = WiFi.localIP().toString();
-        u8g2->drawStr(0, 64, ipa.c_str());
-    } else {
-        u8g2->drawStr(0, 64, "WIFI OFF");
     }
-
-    sprintf(buffer, "%.1f", getBias(actual_frequency));
-    u8g2->drawStr(73, 64, buffer);
-    if (sd1.status() && WiFiClass::status() == WL_CONNECTED)
-        u8g2->drawStr(89, 64, "D");
-    else if (sd1.status())
-        u8g2->drawStr(89, 64, "L");
-    else if (WiFiClass::status() == WL_CONNECTED)
-        u8g2->drawStr(89, 64, "N");
-
-    sprintf(buffer, "%2u", ets_get_cpu_frequency() / 10);
-    u8g2->drawStr(96, 64, buffer);
     voltage = battery.readVoltage() * 2;
-    sprintf(buffer, "%1.2f", voltage);
 
-    if (voltage < 3.4 && !low_volt_warned) {
+    if (runtimeSettings().lowBatteryAlertEnabled && voltage < 3.4 && !low_volt_warned) {
         debugLogError("Warning! Low Voltage detected, %1.2fV\n", voltage);
         sd1.append("低压警告，电池电压%1.2fV\n", voltage);
         low_volt_warned = true;
@@ -175,7 +264,7 @@ void updateInfo() {
         u8g2->setFont(u8g2_font_wqy12_t_gb2312);
         u8g2->setCursor(35, 38);
         u8g2->print("电量不足!");
-        u8g2->sendBuffer();
+        sendStatusBuffer();
         delay(2000);
 
         buzzer.beep(3, 300, 300);
@@ -191,27 +280,35 @@ void updateInfo() {
         u8g2->setFont(u8g2_font_wqy12_t_gb2312);
         u8g2->setCursor(35, 38);
         u8g2->print("电量耗尽!");
-        u8g2->sendBuffer();
+        sendStatusBuffer();
 
         sd1.end();
         buzzer.hold(3000);
         esp_deep_sleep_start();
     }
 
-    u8g2->drawStr(108, 64, buffer);
-    u8g2->sendBuffer();
+    if (!isRideMode()) {
+        drawMainStatusBar(voltage);
+        sendStatusBuffer();
+    }
 }
 
 void showSTR(const String &str) {
+    if (isRideMode() || oled_off || menuDisplayActive || historyDisplayActive)
+        return;
+
     u8g2->setDrawColor(0);
     u8g2->drawBox(0, 8, 128, 48);
     u8g2->setDrawColor(1);
     u8g2->setFont(u8g2_font_squeezed_b7_tr);
     pword(str.c_str(), 0, 19);
-    u8g2->sendBuffer();
+    sendStatusBuffer();
 }
 
 void showLBJ0(const struct lbj_data &l) {
+    if (menuDisplayActive || historyDisplayActive)
+        return;
+
     char buffer[128];
     u8g2->setDrawColor(0);
     u8g2->drawBox(0, 8, 128, 48);
@@ -221,7 +318,9 @@ void showLBJ0(const struct lbj_data &l) {
     u8g2->printf("车  次");
     u8g2->setFont(u8g2_font_spleen8x16_mu);
     u8g2->setCursor(50, u8g2->getCursorY());
-    u8g2->printf("%s", l.train);
+    const char *label = displayedTrainKey[0] ? displayedTrainKey : l.train;
+    if (strlen(label) > 5) u8g2->setFont(u8g2_font_profont12_custom_tf);
+    u8g2->printf("%s", label);
     u8g2->setFont(u8g2_font_wqy15_t_custom);
     u8g2->setCursor(u8g2->getCursorX() + 6, u8g2->getCursorY());
     if (l.direction == FUNCTION_UP) {
@@ -253,12 +352,15 @@ void showLBJ0(const struct lbj_data &l) {
     u8g2->drawBox(98, 0, 30, 8);
     u8g2->setDrawColor(1);
     u8g2->setFont(u8g2_font_squeezed_b7_tr);
-    sprintf(buffer, "%3.1f", rxInfo.rssi);
+    sprintf(buffer, "%3.1f", displayedRssi);
     u8g2->drawStr(99, 7, buffer);
-    u8g2->sendBuffer();
+    sendStatusBuffer();
 }
 
 void showLBJ1(const struct lbj_data &l) {
+    if (menuDisplayActive || historyDisplayActive)
+        return;
+
     char buffer[128];
     u8g2->setDrawColor(0);
     u8g2->drawBox(0, 8, 128, 48);
@@ -349,12 +451,15 @@ void showLBJ1(const struct lbj_data &l) {
     u8g2->drawBox(98, 0, 30, 8);
     u8g2->setDrawColor(1);
     u8g2->setFont(u8g2_font_squeezed_b7_tr);
-    sprintf(buffer, "%3.1f", rxInfo.rssi);
+    sprintf(buffer, "%3.1f", displayedRssi);
     u8g2->drawStr(99, 7, buffer);
-    u8g2->sendBuffer();
+    sendStatusBuffer();
 }
 
 void showLBJ2(const struct lbj_data &l) {
+    if (menuDisplayActive || historyDisplayActive)
+        return;
+
     char buffer[128];
     u8g2->setDrawColor(0);
     u8g2->drawBox(0, 8, 128, 48);
@@ -370,9 +475,58 @@ void showLBJ2(const struct lbj_data &l) {
     u8g2->drawBox(98, 0, 30, 8);
     u8g2->setDrawColor(1);
     u8g2->setFont(u8g2_font_squeezed_b7_tr);
-    sprintf(buffer, "%3.1f", rxInfo.rssi);
+    sprintf(buffer, "%3.1f", displayedRssi);
     u8g2->drawStr(99, 7, buffer);
-    u8g2->sendBuffer();
+    sendStatusBuffer();
+}
+
+// Keep UTF-8 characters intact when a data field is wider than the OLED.
+static void drawUiLine(uint8_t x, uint8_t y, const char *text) {
+    String fitted(text);
+    if (u8g2->getUTF8Width(fitted.c_str()) <= 128 - x) {
+        u8g2->drawUTF8(x, y, fitted.c_str());
+        return;
+    }
+    do {
+        size_t end = fitted.length() - 1;
+        while (end > 0 && (static_cast<uint8_t>(fitted[end]) & 0xc0) == 0x80) --end;
+        fitted.remove(end);
+    } while (fitted.length() && u8g2->getUTF8Width((fitted + "...").c_str()) > 128 - x);
+    fitted += "...";
+    u8g2->drawUTF8(x, y, fitted.c_str());
+}
+
+void showMenuScreen(const char *title, const char *const *lines, uint8_t lineCount, uint8_t selectedLine,
+                    bool showSelection, bool wake) {
+    if (!u8g2) return;
+    if (wake) displayActivity(true);
+    u8g2->clearBuffer();
+    u8g2->setDrawColor(1);
+    u8g2->setFont(FONT_12_GB2312);
+    u8g2->setFontMode(1);
+    u8g2->setFontPosBaseline();
+    drawUiLine(0, 11, title);
+    u8g2->drawHLine(0, 13, 128);
+    const uint8_t visibleLines = lineCount > 4 ? 4 : lineCount;
+    for (uint8_t i = 0; i < visibleLines; ++i) {
+        const uint8_t y = 25 + i * 12;
+        if (showSelection && i == selectedLine) {
+            u8g2->drawBox(0, y - 11, 128, 12);
+            u8g2->setDrawColor(0);
+            drawUiLine(2, y, lines[i]);
+            u8g2->setDrawColor(1);
+        } else {
+            drawUiLine(!wake && isRideMode() && i == 3 ? 30 : 2, y, lines[i]);
+        }
+    }
+    sendStatusBuffer();
+}
+
+void showHistoryRecordScreen(const char *title, const char *const *lines, uint8_t lineCount) {
+    showMenuScreen(title, lines, lineCount, 0, false);
+}
+void showPassiveScreen(const char *title, const char *const *lines, uint8_t lineCount) {
+    showMenuScreen(title, lines, lineCount, 0, false, false);
 }
 
 #endif

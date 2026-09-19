@@ -15,6 +15,7 @@
 #include "unicon.hpp"
 #include "sdlog.hpp"
 #include "boards.hpp"
+#include "time_service.hpp"
 #include "loco.h"
 #include "freertos/FreeRTOS.h"
 
@@ -114,8 +115,6 @@ void silentConnect(const char *ssid, const char *password);
 void changeCpuFreq(uint32_t freq_mhz);
 
 void timeAvailable(struct timeval *t);
-
-void timeSync(struct tm &time);
 
 char *fmtime(const struct tm &time);
 

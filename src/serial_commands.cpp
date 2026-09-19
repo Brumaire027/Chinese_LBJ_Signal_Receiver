@@ -4,6 +4,7 @@
 #include "networks.hpp"
 #include "receiver_control.hpp"
 #include "task_state.hpp"
+#include "storage_menu.hpp"
 
 #include <RadioLib.h>
 
@@ -26,38 +27,25 @@ void handleSerialInput() {
         if (in == "ping")
             Serial.println("$ Pong");
         else if (in == "task state")
-            Serial.println("$ Task state " + String(fd_state));
+            Serial.println("$ Task state " + String(static_cast<int>(fd_state.load())));
         else if (in == "rtc") {
-#ifdef HAS_RTC
-            time_info = rtcLibtoC(rtc.now());
-            Serial.print(&time_info, "$ [eRTC] %Y-%m-%d %H:%M:%S ");
-#endif
+            printRtcStatus();
         } else if (in == "time") {
-            getLocalTime(&time_info, 1);
-            Serial.printf("$ SYS Time %s, Up time %llu ms (%s)\n", fmtime(time_info), millis64(), fmtms(millis64()));
+            tm current{};
+            if (getValidLocalTime(&current))
+                Serial.printf("$ SYS Time %s (UTC+8), source=%s\n", fmtime(current), systemTimeSource());
+            else
+                Serial.println("$ SYS Time UNSET (not calibrated)");
+            Serial.printf("$ Up time %llu ms (%s)\n", millis64(), fmtms(millis64()));
         } else if (in == "cd") {
             if (have_cd)
-                Serial.println("$ Core dump exported.");
+                Serial.println("$ Core dump present; automatic SD export disabled.");
             else
                 Serial.println("$ No core dump.");
         } else if (in == "sd end") {
-            if (!sd1.status())
-                Serial.println("$ [SDLOG] No SD.");
-            else {
-                sd1.append("[SDLOG] SD卡将被卸载\n");
-                sd1.end();
-                Serial.println("$ [SDLOG] SD end.");
-            }
+            Serial.printf("$ [SDLOG] %s\n", unmountStorage());
         } else if (in == "sd begin") {
-            if (sd1.status())
-                Serial.println("$ End SD First.");
-            else {
-                SD_LOG::reopenSD();
-                sd1.begin("/LOGTEST");
-                sd1.beginCSV("/CSVTEST");
-                sd1.append("[SDLOG] SD卡已重新挂载\n");
-                Serial.println("$ [SDLOG] SD reopen.");
-            }
+            Serial.printf("$ [SDLOG] %s\n", remountStorage());
         } else if (in == "mem") {
             Serial.printf("$ Mem left: %d Bytes\n", esp_get_free_heap_size());
         } else if (in == "rst") {

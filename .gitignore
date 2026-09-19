@@ -1,10 +1,34 @@
-.pio
-logs
-.vscode
-.idea
-/COREDUMP*.bin
-/coredump.txt
-/readcd_bin.bat
-/readcd_bin.ps1
-/readcd_txt.bat
-.clang-format
+# Publish only the firmware, required local libraries, and project essentials.
+# Ignored working documents, tools, tests and outputs remain available locally.
+/*
+!/.gitignore
+!/LICENSE
+!/README.md
+!/platformio.ini
+!/src/
+!/include/
+!/lib/
+
+# Application source and font data; omit developer notes.
+/src/*.md
+
+/include/*
+!/include/wm_strings_zh_v2.h
+
+/lib/*
+!/lib/RadioLib/
+!/lib/SD/
+
+/lib/RadioLib/*
+!/lib/RadioLib/src/
+!/lib/RadioLib/library.json
+!/lib/RadioLib/library.properties
+!/lib/RadioLib/license.txt
+
+/lib/SD/*
+!/lib/SD/src/
+!/lib/SD/library.properties
+
+__pycache__/
+*.pyc
+*.o

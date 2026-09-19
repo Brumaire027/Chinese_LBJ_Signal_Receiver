@@ -13,7 +13,7 @@
 #include <SD.h>
 #include <FS.h>
 // 声明外部变量，让其他文件能用
-extern SPIClass SDSPI;
+bool mountSdCard();
 extern bool have_sd;
 #endif
 
@@ -30,8 +30,7 @@ extern DISPLAY_MODEL *u8g2;
 // === RTC 时钟部分===
 #ifdef HAS_RTC
 #include <RTClib.h>
-// RTC_DS1307
-extern RTC_DS1307 rtc;
+extern RTC_DS3231 rtc;
 #endif
 
 #ifndef OLED_WIRE_PORT
@@ -39,7 +38,7 @@ extern RTC_DS1307 rtc;
 #endif
 
 // === 电源管理 (PMU) 部分===
-// DIY 板子没有 PMU，为了防止 main.cpp 报错，我们定义空宏
+// DIY 板子没有 PMU，为了防止 main.cpp 报错，定义空宏
 #define initPMU()
 #define disablePeripherals()
 

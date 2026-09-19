@@ -63,13 +63,18 @@ public:
 
     void end();
 
-    static void reopenSD();
+    static bool reopenSD();
 
     void disableSizeCheck();
 
     void enableSizeCheck();
 
     bool status() const;
+    bool csvStatus() const { return sd_csv; }
+    const char *logName() const { return filename; }
+    const char *csvName() const { return filename_csv; }
+    // Caller must hold the main-loop idle gate (no formatter task).
+    bool safeEnd();
 
 private:
     void getFilename(const char *path);

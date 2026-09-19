@@ -18,16 +18,27 @@ float voltage = 4.20;
 
 // SD卡对象
 #ifdef HAS_SDCARD
-    SPIClass SDSPI(VSPI); // 使用 VSPI 总线
     bool have_sd = false;
 #endif
 
 // RTC 对象
 #ifdef HAS_RTC
-    RTC_DS1307 rtc; 
+    RTC_DS3231 rtc;
 #endif
 
 // === 2. 辅助函数 ===
+#ifdef HAS_SDCARD
+bool mountSdCard() {
+    // Both clients use the same SPIClass and transaction lock. Never SPI.end().
+    SPI.beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE0));
+    digitalWrite(RADIO_CS_PIN, HIGH);
+    digitalWrite(SDCARD_CS, HIGH);
+    SPI.endTransaction();
+    have_sd = SD.begin(SDCARD_CS, SPI, 4000000, "/sd", 5, false);
+    return have_sd;
+}
+#endif
+
 uint64_t millis64() {
     return esp_timer_get_time() / 1000ULL;
 }
@@ -37,31 +48,29 @@ void initBoard() {
     Serial.begin(115200);
     debugLogInfoPrintln("\n[Board] Init Started (DIY Version)...");
 
-    // --- LED 初始化 ---
-    #ifdef BOARD_LED
-        pinMode(BOARD_LED, OUTPUT);
-        digitalWrite(BOARD_LED, LOW); 
-    #endif
-
     // --- 总线初始化 ---
     // I2C (OLED & RTC)
     Wire.begin(I2C_SDA, I2C_SCL);
     
     // SPI (LoRa & SD)
-    // 使用 platformio.ini 中定义的引脚宏
+    // Deassert both chip selects before any clocks on the shared V2 bus.
+    digitalWrite(RADIO_CS_PIN, HIGH);
+    pinMode(RADIO_CS_PIN, OUTPUT);
+    digitalWrite(SDCARD_CS, HIGH);
+    pinMode(SDCARD_CS, OUTPUT);
     SPI.begin(RADIO_SCLK_PIN, RADIO_MISO_PIN, RADIO_MOSI_PIN);
 
     // --- OLED 初始化 ---
     #ifdef HAS_DISPLAY
         debugLogInfoPrintln("[Display] Init...");
-        // 这里的 OLED_RST 在 ini 里定义为 -1
+        // OLED_RST is defined in the central hardware pin map.
         u8g2 = new DISPLAY_MODEL(U8G2_R0, OLED_RST, I2C_SCL, I2C_SDA);
         
         if (u8g2->begin()) {
             u8g2->clearBuffer();
-            u8g2->setFont(u8g2_font_ncenB08_tr);
-            u8g2->drawStr(0, 12, "LBJ Receiver");
-            u8g2->drawStr(0, 26, "System Init...");
+            u8g2->setFont(FONT_12_GB2312);
+            u8g2->drawUTF8(0, 12, "列车接收器");
+            u8g2->drawUTF8(0, 26, "系统初始化");
             u8g2->sendBuffer();
         } else {
             debugLogErrorPrintln("[Display] Failed!");
@@ -71,40 +80,23 @@ void initBoard() {
     // --- SD 卡初始化 ---
     #ifdef HAS_SDCARD
         debugLogInfoPrintln("[SD] Init...");
-        // 注意：SD卡使用 SDSPI 实例，引脚来自 platformio.ini
-        SDSPI.begin(SDCARD_SCLK, SDCARD_MISO, SDCARD_MOSI, SDCARD_CS);
-        
-        if (!SD.begin(SDCARD_CS, SDSPI)) {
+        if (!mountSdCard()) {
             debugLogErrorPrintln("[SD] Mount Failed!");
             if(u8g2) {
-                u8g2->drawStr(0, 40, "SD: Fail");
+                u8g2->drawUTF8(0, 40, "存储卡不可用");
                 u8g2->sendBuffer();
             }
         } else {
             debugLogInfoPrintln("[SD] Mounted Successfully");
             have_sd = true;
             if(u8g2) {
-                u8g2->drawStr(0, 40, "SD: OK");
+                u8g2->drawUTF8(0, 40, "存储卡正常");
                 u8g2->sendBuffer();
             }
         }
     #endif
 
-    // --- RTC 初始化 ---
-    #ifdef HAS_RTC
-        debugLogInfoPrintln("[RTC] Init...");
-        if (!rtc.begin()) {
-            debugLogErrorPrintln("[RTC] Not Found!");
-        } else {
-            if (!rtc.isrunning()) {
-                debugLogInfoPrintln("[RTC] Not running, setting time...");
-                rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-            }
-            // 打印当前时间测试
-            DateTime now = rtc.now();
-            debugLogInfo("[RTC] Time: %02d:%02d:%02d\n", now.hour(), now.minute(), now.second());
-        }
-    #endif
+    // RTC initialization/time validation follows in initTimeService().
     
     // --- 电池虚拟初始化 ---
     #ifdef ADC_PIN

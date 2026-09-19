@@ -3,6 +3,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <atomic>
 
 enum task_states {
     TASK_INIT = 0,
@@ -15,6 +16,6 @@ enum task_states {
 };
 
 extern TaskHandle_t task_fd;
-extern task_states fd_state;
+extern std::atomic<task_states> fd_state;
 
 #endif

@@ -11,6 +11,6 @@
 
 extern bool have_cd;
 
-void readCoreDump();
+void checkCoreDumpPresence();
 
 #endif //PAGER_RECEIVE_COREDUMP_H
