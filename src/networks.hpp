@@ -74,13 +74,10 @@ extern const char *ntpServer2;
 
 extern struct tm time_info;
 
-// you'll have to change this!
-#define WIFI_SSID       "ABCDE"
+// First-boot defaults, used only when no Wi-Fi SSID has been saved.
+#define WIFI_SSID       "LBJ"
 #define WIFI_PASSWORD   "123456789"
 #define NETWORK_TIMEOUT 600000 // 10 minutes
-
-extern String wifiSSID;
-extern String wifiPassword;
 
 extern ESPTelnet telnet;
 extern IPAddress ip;

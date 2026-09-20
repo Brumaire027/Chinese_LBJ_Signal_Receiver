@@ -64,17 +64,10 @@ bool connectToWiFi(const String &ssid, const String &password, int timeout) {
 
 bool connectWiFi() {
     WiFiClass::mode(WIFI_STA);
-    if (!wifiPassword.isEmpty() && !wifiSSID.isEmpty()) {
-        WiFi.begin(wifiSSID, wifiPassword);
-        debugLogInfoPrintln("[Network]Connecting to WiFi...");
-    }
-
     preferences.begin("wifi-config", false);
 
     String savedSSID = preferences.getString("ssid", "");
     String savedPassword = preferences.getString("password", "");
-    wifiSSID = preferences.getString("ssid", "");
-    wifiPassword = preferences.getString("password", "");
 
     if (!savedSSID.isEmpty() && !savedPassword.isEmpty()) {
         if (!connectToWiFi(savedSSID, savedPassword, 10000)) {
@@ -106,6 +99,9 @@ void silentConnect(const char *ssid, const char *password) {
 }
 
 void changeCpuFreq(uint32_t freq_mhz) {
+    // Repeated idle-loop calls must not restart an in-progress connection.
+    // Defer frequency changes while the phone provisioning hotspot is active.
+    if (ets_get_cpu_frequency() == freq_mhz || (WiFi.getMode() & WIFI_AP)) return;
     /*TODO: The wireless function is giving me a headache.
      * changing frequency during wifi connected may trigger disconnection, while giving a restart WILL trigger
      * a disconnection and cause the loop to stuck up to 1000 MS!
@@ -130,18 +126,11 @@ void changeCpuFreq(uint32_t freq_mhz) {
         debugLogVerbose("[D] WIFI OFF [%llu] \n", millis64() - timer);
         if (ets_get_cpu_frequency() != freq_mhz)
             setCpuFrequencyMhz(freq_mhz);
-        // fixme: this needs to be modified to fit the requirement.
-#ifdef USE_SMARTCONFIG
-        // connectWiFi();
-        WiFi.begin(wifiSSID, wifiPassword);
-#else
-        WiFi.begin(wifiSSID, wifiPassword);
-#endif
-        // Serial.println("[D] WIFI BEGIN");
         WiFiClass::mode(WIFI_MODE_STA);
-        // Serial.println("[D] WIFI STA");
-//        WiFi.setAutoReconnect(true);
-//        WiFi.persistent(true);
+        WiFi.setAutoReconnect(true);
+        // Same source as boot/menu reconnect: the last saved portal configuration.
+        // Never replace it with legacy variables or example credentials.
+        WiFi.begin();
     }
 }
 

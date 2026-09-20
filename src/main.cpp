@@ -62,9 +62,6 @@
 
 #include <WiFiManager.h>
 
-// configure the wifi connection
-String wifiSSID = "ABCDE";
-String wifiPassword = "123456789";
 #define NETWORK_TIMEOUT 600000 // 10 minutes
 
 #define WDT_TIMEOUT 20 // sec
@@ -327,86 +324,6 @@ void setup() {
         u8g2->sendBuffer();
     }
 
-/* SmatPhone配网
-#ifdef USE_SMARTCONFIG
-    // initialize wireless network.
-    Serial.printf("Connecting to WiFi\n");
-
-    Preferences preferences;
-    preferences.begin("wifi-config", false);
-
-    String savedSSID = preferences.getString("ssid", "");
-    String savedPassword = preferences.getString("password", "");
-
-    if (!savedSSID.isEmpty() && !savedPassword.isEmpty()) {
-        if (u8g2) {
-            u8g2->setDrawColor(0);
-            u8g2->drawBox(0, 42, 128, 14);
-            u8g2->setDrawColor(1);
-            u8g2->setCursor(0, 52);
-            u8g2->println("等待网络连接");
-            u8g2->sendBuffer();
-        }
-        if (!connectToWiFi(savedSSID, savedPassword, 10000)) {
-            if (u8g2) {
-                u8g2->setDrawColor(0);
-                u8g2->drawBox(0, 42, 128, 14);
-                u8g2->setDrawColor(1);
-                u8g2->setCursor(0, 40);
-                u8g2->println("网络连接失败");
-                u8g2->setCursor(0, 52);
-                u8g2->println("等待配网");
-                u8g2->sendBuffer();
-            }
-            performSmartConfig();
-        }
-    } else {
-        if (u8g2) {
-            u8g2->setDrawColor(0);
-            u8g2->drawBox(0, 42, 128, 14);
-            u8g2->setDrawColor(1);
-            u8g2->setCursor(0, 52);
-            u8g2->println("等待配网");
-            u8g2->sendBuffer();
-        }
-        performSmartConfig();
-    }
-
-    Serial.print("[Network]IP Address: ");
-    Serial.println(WiFi.localIP());
-    WiFi.setAutoReconnect(true);
-    WiFi.persistent(true);
-    preferences.putString("ssid", WiFi.SSID());
-    preferences.putString("password", WiFi.psk());
-    preferences.end();
-    wifiSSID = WiFi.SSID();
-    wifiPassword = WiFi.psk();
-#else
-    // initialize wireless network.
-    Serial.printf("Connecting to WiFi %s\n", wifiSSID.c_str());
-    if (u8g2) {
-        u8g2->setDrawColor(0);
-        u8g2->drawBox(0, 42, 128, 14);
-        u8g2->setDrawColor(1);
-        u8g2->drawUTF8(0, 52, "正在连接网络");
-        u8g2->sendBuffer();
-    }
-    connectToWiFi(wifiSSID, wifiPassword, 1000);
-#endif
-
-    if (isConnected()) {
-        ip = WiFi.localIP();
-        // Serial.println();
-        Serial.print("[Telnet] ");
-        Serial.print(ip);
-        Serial.print(":");
-        Serial.println(port);
-        setupTelnet(); // todo: find another library / modify the code to support multiple client connection.
-    } else {
-        // Serial.println();
-        Serial.println("Error connecting to WiFi, Telnet startup skipped.");
-    }
-SmatPhone注释结束 */
 
     initNetworkSettings();
 
@@ -486,7 +403,7 @@ void handleTelnet() {
     }
     if (!telnet_online) {
         ip = WiFi.localIP();
-        debugLogInfo("WIFI Connection to %s established.\n", wifiSSID.c_str());
+        debugLogInfo("WIFI Connection to %s established.\n", WiFi.SSID().c_str());
         debugLogInfoPrint("[Telnet] ");
         debugLogInfoPrint(ip);
         debugLogInfoPrint(":");
@@ -578,7 +495,10 @@ void loop() {
 
     // if task complete, de-initialize
     if (fd_state == TASK_DONE) {
-        if (db) acceptModeReception(*db, rxInfo);
+        if (db) {
+            noteReceiverDecoded(*db);
+            acceptModeReception(*db, rxInfo);
+        }
         task_fd = nullptr;
         // Serial.printf("[D] NULLPTR [%llu]\n", millis64() - format_task_timer);
         initFmtVars();
@@ -692,6 +612,7 @@ void loop() {
         runtime_timer = millis64();
         timer4 = millis64();
         int state = pager.readDataMSA(db->pocsagData, 0);
+        noteReceiverBatch();
 //        sd1.append("[PHY-LAYER][D] AVAILABLE > 2.\n");
         rxInfo.rssi = rxInfo.cnt > 0 ? rssi_cache / (float) rxInfo.cnt : 0;
         rssi_cache = 0;

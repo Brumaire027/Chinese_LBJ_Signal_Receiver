@@ -2,6 +2,7 @@
 
 #include "debug_log.hpp"
 #include "networks.hpp"
+#include "task_state.hpp"
 
 extern SX1276 radio;
 extern PagerClient pager;
@@ -12,6 +13,45 @@ extern float car_fer_last;
 extern struct rx_info rxInfo;
 extern uint64_t car_timer;
 extern uint32_t car_count;
+
+namespace {
+ReceiverDiagnostics diagnostics;
+}
+
+const ReceiverDiagnostics &receiverDiagnostics() { return diagnostics; }
+
+void noteReceiverBatch() {
+    if (diagnostics.received != UINT32_MAX) ++diagnostics.received;
+    diagnostics.lastReceivedMs = millis64();
+}
+
+void noteReceiverDecoded(const data_bond &bond) {
+    // The legacy parser returns zero even for unknown or incomplete messages.
+    // Count a batch once only if it contains a complete, corrected LBJ message
+    // of the resulting decoded type. Do not equate parser return zero with success.
+    for (const auto &p : bond.pocsagData) {
+        if (p.is_empty || p.errs_uncorrected || p.str.indexOf('X') >= 0) continue;
+        const bool valid =
+            (bond.lbjData.type == 0 && p.addr == LBJ_INFO_ADDR && p.str.length() >= 15) ||
+            (bond.lbjData.type == 1 && ((p.addr == LBJ_INFO2_ADDR && p.str.length() >= 50) ||
+                                      (p.addr == LBJ_INFO_ADDR && (p.str.length() == 65 || p.str.length() >= 70)))) ||
+            (bond.lbjData.type == 2 && p.addr == LBJ_SYNC_ADDR && p.str.length() >= 5);
+        if (valid) {
+            if (diagnostics.decoded != UINT32_MAX) ++diagnostics.decoded;
+            return;
+        }
+    }
+}
+
+void sampleReceiverDiagnostics() {
+    const uint64_t now = millis64();
+    if (fd_state != TASK_INIT || (diagnostics.haveRssi && now - diagnostics.sampledMs < 500)) return;
+    // FSK direct reception stays running. Existing SPI transactions serialize
+    // this register read with SD; never restart reception just to measure RSSI.
+    diagnostics.rssi = radio.getRSSI(false, true);
+    diagnostics.sampledMs = now;
+    diagnostics.haveRssi = true;
+}
 
 float actualFreq(float bias) {
     actual_frequency = (float) ((TARGET_FREQ * bias) / 1e6 + TARGET_FREQ);

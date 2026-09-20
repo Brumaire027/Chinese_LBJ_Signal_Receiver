@@ -5,6 +5,7 @@
 #include "status_display.hpp"
 #include "task_state.hpp"
 #include <WiFiManager.h>
+#include <esp_wifi.h>
 
 extern WiFiManager wm;
 extern bool is_ap_active;
@@ -40,6 +41,17 @@ void closePortal() {
 }
 }
 void initNetworkSettings() {
+    // Inspect stored station configuration, not WiFi.SSID(): that reports only
+    // the connected AP and is empty when an already-configured network is offline.
+    WiFi.mode(WIFI_STA);
+    wifi_config_t saved = {};
+    if (esp_wifi_get_config(WIFI_IF_STA, &saved) == ESP_OK && saved.sta.ssid[0] == '\0') {
+        // Seed only a device with no saved SSID. Portal saves later replace this;
+        // connection failure must never trigger a fallback or overwrite.
+        WiFi.persistent(true);
+        WiFi.begin(WIFI_SSID, WIFI_PASSWORD, 0, nullptr, false);
+        WiFi.persistent(false);
+    }
     wm.setConfigPortalBlocking(false);
     wm.setConnectTimeout(3);
     wm.setSaveConnectTimeout(1);
