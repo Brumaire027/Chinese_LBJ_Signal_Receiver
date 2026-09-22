@@ -238,6 +238,11 @@ Wi-Fi credentials are stored internally and are normally retained during firmwar
 
 Radio reception, OLED display, and SD recording do not depend on Wi-Fi. Networking is mainly used for setup, NTP time synchronization, and Telnet output.
 
+## Hardware
+
+The hardware design is open source on OSHWHub:  
+[ESP32 SX1276 LBJ Receiver](https://oshwhub.com/diuren/esp32_sx1276_lbj_receiver)
+
 ## Acknowledgements
 
 This project is adapted from FLN1021's `SX1276_Receive_LBJ`. Thanks to the original author and the contributors to these open-source projects:
