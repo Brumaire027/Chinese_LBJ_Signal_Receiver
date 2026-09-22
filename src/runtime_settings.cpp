@@ -1,4 +1,6 @@
 #include "runtime_settings.hpp"
+#include "indicator_led.hpp"
+#include "buzzer.hpp"
 
 #include <Preferences.h>
 
@@ -77,11 +79,13 @@ bool isTrainArrivalBuzzerEnabled() {
 
 void toggleTrainArrivalLedEnabled() {
     settings.trainArrivalLedEnabled = !settings.trainArrivalLedEnabled;
+    if (!settings.trainArrivalLedEnabled) stopIndicatorLed();
     saveRuntimeSettings();
 }
 
 void toggleTrainArrivalBuzzerEnabled() {
     settings.trainArrivalBuzzerEnabled = !settings.trainArrivalBuzzerEnabled;
+    if (!settings.trainArrivalBuzzerEnabled) buzzer.stop();
     saveRuntimeSettings();
 }
 

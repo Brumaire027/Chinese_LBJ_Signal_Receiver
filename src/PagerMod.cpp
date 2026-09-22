@@ -3,6 +3,7 @@
 #include "BCH3121.hpp"
 #include "debug_log.hpp"
 #include "networks.hpp"
+#include "pager_decode_bounds.hpp"
 
 bool fixBCH(uint32_t &cw, CBCH3121 &bch, uint16_t &err) {
     //todo: this function is useless, it's highly unlikely to fix message like this. Delete this function to save time.
@@ -37,28 +38,14 @@ int16_t PagerClient::readDataMSA(struct PagerClient::pocsag_data *p, size_t len)
     bool complete = false;
     uint8_t framePos = 0;
     uint32_t addr_next = 0;
-//        bool is_empty = true;
+    // Bound stack usage by the physical receive buffer, including a partial batch.
+    // available()*80 counts only full batches and can underestimate decoded output.
+    constexpr size_t maxSymbols = pager_decode::symbolCapacity(RADIOLIB_STATIC_ARRAY_SIZE);
+    const size_t capacity = len && len < maxSymbols ? len : maxSymbols;
+    uint8_t data[maxSymbols + 1];
     for (size_t i = 0; i < POCDAT_SIZE; i++) {
-        // determine the message length, based on user input or the amount of received data
-        size_t length = len;
-        if (len == 0) {
-            // one batch can contain at most 80 message symbols
-            len = available() * 80;
-        }
-
-        if (complete)
-            break;
-
-        // build a temporary buffer
-#if defined(RADIOLIB_STATIC_ONLY)
-        uint8_t data[RADIOLIB_STATIC_ARRAY_SIZE + 1];
-#else
-        // auto *data = new uint8_t[len + 1];
-        // if (!data) {
-        //     return (RADIOLIB_ERR_MEMORY_ALLOCATION_FAILED);
-        // }
-#endif
-        uint8_t data[len + 1];
+        if (complete) break;
+        size_t length = capacity; // Input capacity; readDataMA returns the actual length.
 
         state = readDataMA(data, &length, &p[i].addr, &p[i].func, &framePos, &addr_next, &p[i].is_empty,
                            &complete, &p[i].errs_total, &p[i].errs_uncorrected);
@@ -140,6 +127,7 @@ int16_t PagerClient::readDataMSA(struct PagerClient::pocsag_data *p, size_t len)
 int16_t PagerClient::readDataMA(uint8_t *data, size_t *len, uint32_t *addr, uint32_t *func, uint8_t *framePos,
                                 uint32_t *addr_next, bool *is_empty, bool *complete, uint16_t *errs_total,
                                 uint16_t *errs_uncorrected) {
+    const size_t capacity = *len;
     // find the correct address
     bool match = false;
 //    uint8_t framePos = 0;
@@ -166,7 +154,7 @@ int16_t PagerClient::readDataMA(uint8_t *data, size_t *len, uint32_t *addr, uint
         }
     }
 
-    while (!match && phyLayer->available()) {
+    while (!match && pager_decode::canReadCodeword(phyLayer->available())) {
 
         uint32_t cw = read();
 //        *framePos++;
@@ -289,7 +277,7 @@ int16_t PagerClient::readDataMA(uint8_t *data, size_t *len, uint32_t *addr, uint
     bool overflow = false;
     int8_t ovfBits = 0;
     errors = 0;
-    while (!*complete && phyLayer->available()) {
+    while (!*complete && pager_decode::canReadCodeword(phyLayer->available())) {
 //        *framePos++;
         *framePos = *framePos + 1;
         uint32_t cw = read();
@@ -336,6 +324,7 @@ int16_t PagerClient::readDataMA(uint8_t *data, size_t *len, uint32_t *addr, uint
                 // }
                 // parity_check = true;
                 for (size_t i = 0; i < 5; i++) {
+                    if (!pager_decode::canAppend(decodedBytes, capacity)) return RADIOLIB_ERR_PACKET_TOO_LONG;
                     data[decodedBytes++] = 'X';
                 }
                 *errs_uncorrected += errors - err_prev;
@@ -354,6 +343,7 @@ int16_t PagerClient::readDataMA(uint8_t *data, size_t *len, uint32_t *addr, uint
         } else {
             *errs_uncorrected += errors - err_prev;
             for (size_t i = 0; i < 5; i++) {
+                if (!pager_decode::canAppend(decodedBytes, capacity)) return RADIOLIB_ERR_PACKET_TOO_LONG;
                 data[decodedBytes++] = 'X';
             }
             // Serial.printf("BCH Failed. ERR %d \n", errors);
@@ -426,6 +416,7 @@ int16_t PagerClient::readDataMA(uint8_t *data, size_t *len, uint32_t *addr, uint
                 symbol = decodeBCD(symbol);
             }
 //            Serial.printf("DE LEN %d \n",decodedBytes);
+            if (!pager_decode::canAppend(decodedBytes, capacity)) return RADIOLIB_ERR_PACKET_TOO_LONG;
             data[decodedBytes++] = symbol;
             deco++;
 
@@ -446,6 +437,7 @@ int16_t PagerClient::readDataMA(uint8_t *data, size_t *len, uint32_t *addr, uint
                 symbol = decodeBCD(symbol);
             }
 //            Serial.printf("DE LEN %d \n",decodedBytes);
+            if (!pager_decode::canAppend(decodedBytes, capacity)) return RADIOLIB_ERR_PACKET_TOO_LONG;
             data[decodedBytes++] = symbol;
 
             // now calculate if the next symbol is overflowing to the following code word

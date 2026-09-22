@@ -1,4 +1,5 @@
 #include "serial_commands.hpp"
+#include "serial_line_buffer.hpp"
 
 #include "coredump.h"
 #include "networks.hpp"
@@ -22,8 +23,18 @@ static void getCoreFreq(void *pVoid) {
 }
 
 void handleSerialInput() {
-    if (Serial.available()) {
-        String in = Serial.readStringUntil('\r');
+    static SerialLineBuffer input;
+    // Bound work per loop even if the host continuously streams bytes.
+    for (size_t consumed = 0; consumed < SerialLineBuffer::Capacity && Serial.available(); ++consumed) {
+        const int next = Serial.read();
+        if (next < 0) break;
+        const auto result = input.push(static_cast<char>(next));
+        if (result == SerialLineBuffer::Result::TooLong) {
+            Serial.println("$ Command too long; ignored");
+            return;
+        }
+        if (result != SerialLineBuffer::Result::Ready) continue;
+        const String in(input.line());
         if (in == "ping")
             Serial.println("$ Pong");
         else if (in == "task state")
@@ -86,5 +97,6 @@ void handleSerialInput() {
             xTaskCreatePinnedToCore(getCoreFreq, "get_freq", 2048, nullptr, 1, nullptr, 0);
             Serial.printf("Core %d Frequency %d MHz\n", xPortGetCoreID(), ets_get_cpu_frequency());
         }
+        return; // At most one command per main-loop iteration.
     }
 }

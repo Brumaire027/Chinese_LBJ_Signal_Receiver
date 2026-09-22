@@ -12,6 +12,7 @@
 #include "use_mode.hpp"
 #include "menu_result_timer.hpp"
 #include "receiver_control.hpp"
+#include "reception_debug.hpp"
 
 extern bool low_volt_warned;
 
@@ -65,6 +66,7 @@ void enterMenu() {
 }
 
 void exitMenu() {
+    closeReceptionDebug();
     diagnosticsOpen = false;
     currentView = MenuView::Inactive;
     menuDirty = false;
@@ -118,37 +120,8 @@ void renderTopLevel() {
     showMenuScreen("主菜单", visible, count, selectedPage - first, true);
 }
 
-void formatDiagnosticCount(char *out, size_t size, uint32_t value) {
-    // Compact large counts to keep both counters on one OLED line.
-    if (value >= 100000000U) snprintf(out, size, "%lu亿", static_cast<unsigned long>(value / 100000000U));
-    else if (value >= 10000U) snprintf(out, size, "%lu万", static_cast<unsigned long>(value / 10000U));
-    else snprintf(out, size, "%lu", static_cast<unsigned long>(value));
-}
-
-void renderReceiverDiagnostics() {
-    const auto &d = receiverDiagnostics();
-    const uint64_t now = millis64();
-    char frequency[48], signal[48], counts[48], recent[48], received[20], decoded[20];
-    snprintf(frequency, sizeof(frequency), "频率:%.4fMHz", actual_frequency);
-    if (!d.haveRssi || now - d.sampledMs >= 2000)
-        snprintf(signal, sizeof(signal), "信号:等待采样");
-    else snprintf(signal, sizeof(signal), "信号:%.0fdBm", d.rssi);
-    formatDiagnosticCount(received, sizeof(received), d.received);
-    formatDiagnosticCount(decoded, sizeof(decoded), d.decoded);
-    snprintf(counts, sizeof(counts), "收:%s 成:%s", received, decoded);
-    if (!d.received) snprintf(recent, sizeof(recent), "最近:尚未收到");
-    else {
-        const uint64_t seconds = (now - d.lastReceivedMs) / 1000;
-        if (seconds < 3600) snprintf(recent, sizeof(recent), "最近:%lu秒前", static_cast<unsigned long>(seconds));
-        else if (seconds < 86400) snprintf(recent, sizeof(recent), "最近:%lu分前", static_cast<unsigned long>(seconds / 60));
-        else snprintf(recent, sizeof(recent), "最近:%lu天前", static_cast<unsigned long>(seconds / 86400));
-    }
-    const char *lines[] = {frequency, signal, counts, recent};
-    showMenuScreen("接收诊断", lines, 4, 0, false);
-}
-
 void renderSystemStatus() {
-    if (diagnosticsOpen) { renderReceiverDiagnostics(); return; }
+    if (diagnosticsOpen) { renderReceptionDebug(); return; }
     char uptime[48], memory[48], storage[48], receiver[48];
     const uint64_t seconds = millis64() / 1000ULL;
     if (seconds < 86400ULL)
@@ -158,7 +131,7 @@ void renderSystemStatus() {
     snprintf(memory, sizeof(memory), "可用内存:%lu千字节", static_cast<unsigned long>(esp_get_free_heap_size() / 1024));
     snprintf(storage, sizeof(storage), "卡:%s 网络:%s", statusText(sd1.status()), statusText(isConnected()));
     snprintf(receiver, sizeof(receiver), "远程:%s 接收:%s", statusText(telnet_online), rxStateText());
-    const char *lines[] = {uptime, memory, storage, receiver};
+    const char *lines[] = {uptime, memory, storage, "接收诊断 >"};
     showMenuScreen(MENU_TITLES[selectedPage], lines, 4, 0, false);
 }
 
@@ -325,10 +298,12 @@ void handleMenuButtonEvent(const ButtonEvent &event) {
     if (currentView == MenuView::Page) {
         if (selectedPage == SYSTEM_PAGE) {
             if (diagnosticsOpen) {
-                if (event.id == ButtonId::Key4) { diagnosticsOpen = false; menuDirty = true; }
+                if (handleReceptionDebugButton(event.id)) diagnosticsOpen = false;
+                menuDirty = true;
                 return;
             }
             if (event.id == ButtonId::Key1) {
+                openReceptionDebug();
                 diagnosticsOpen = true;
                 diagnosticsRefresh = millis();
                 menuDirty = true;
@@ -419,8 +394,8 @@ void handleMenuButtonEvent(const ButtonEvent &event) {
 }
 
 void updateMenuSystem() {
+    if (currentView == MenuView::Page && selectedPage == MODE_PAGE && updateModeMenu()) menuDirty = true;
     if (currentView == MenuView::Page && selectedPage == SYSTEM_PAGE && diagnosticsOpen) {
-        sampleReceiverDiagnostics();
         if (uint32_t(millis() - diagnosticsRefresh) >= 1000) {
             diagnosticsRefresh = millis();
             menuDirty = true;

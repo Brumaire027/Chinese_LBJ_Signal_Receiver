@@ -10,6 +10,7 @@
 #include "display_power.hpp"
 #include "runtime_settings.hpp"
 #include "use_mode.hpp"
+#include "display_fields.hpp"
 #include "recording_health.hpp"
 #include <atomic>
 
@@ -88,11 +89,12 @@ bool isHistoryDisplayActive() {
 
 void requestDecodedDisplayUpdate(const struct lbj_data &data, uint64_t runtimeStartMs, float rssi, bool arrival, const char *trainKey) {
     pendingDecodedDisplayData = data;
+    if (data.type == 0 || data.type == 1) display_fields::normalize(pendingDecodedDisplayData);
     pendingDecodedDisplayRuntimeStartMs = runtimeStartMs;
     pendingDecodedDisplayUpdate = true;
     displayedRssi = rssi;
     snprintf(displayedTrainKey, sizeof(displayedTrainKey), "%s", trainKey ? trainKey : "");
-    // The mode queue owns its dwell timer; a previous frame must not delay a new queued car.
+    // Explicit cached redraws may bypass the rate limit; arrivals coalesce to the newest report.
     if (!arrival) lastDecodedDisplayRefreshMs = millis() - OLED_DECODED_DISPLAY_MIN_INTERVAL_MS;
     if (arrival) receivedDisplayActivity.store(true);
 }
@@ -328,7 +330,7 @@ void showLBJ0(const struct lbj_data &l) {
     } else if (l.direction == FUNCTION_DOWN) {
         u8g2->printf("下行");
     } else {
-        u8g2->printf("%d", l.direction);
+        u8g2->printf("--");
     }
     u8g2->setCursor(0, 37);
     u8g2->printf("速  度");
@@ -403,7 +405,7 @@ void showLBJ1(const struct lbj_data &l) {
     else if (l.direction == FUNCTION_DOWN)
         u8g2->drawUTF8(68, 31, "下");
     else {
-        sprintf(buffer, "%d", l.direction);
+        snprintf(buffer, sizeof(buffer), "--");
         u8g2->drawStr(71, 31, buffer);
     }
     u8g2->setDrawColor(1);
@@ -419,7 +421,7 @@ void showLBJ1(const struct lbj_data &l) {
     u8g2->setCursor(u8g2->getCursorX() + 1, u8g2->getCursorY());
     u8g2->setFont(u8g2_font_profont12_custom_tf);
     u8g2->printf("%s", l.loco);
-    if (String(l.loco) != "<NUL>" && l.info2_hex.length() > 14 && l.info2_hex[12] == '3') {
+    if (display_fields::digits(l.loco, 8) && l.info2_hex.length() > 14 && l.info2_hex[12] == '3') {
         if (l.info2_hex[13] == '1')
             u8g2->printf("A");
         else if (l.info2_hex[13] == '2')

@@ -1,3 +1,4 @@
+#include "reception_debug.hpp"
 #include "data_formatter.hpp"
 #include "debug_log.hpp"
 #include "indicator_led.hpp"
@@ -17,8 +18,12 @@ void collectRawPagerData(struct data_bond &bond, uint64_t runtimeStartMs) {
 }
 
 void decodeLbjData(struct data_bond &bond, uint64_t runtimeStartMs) {
-    readDataLBJ(bond.pocsagData, &bond.lbjData);
-    // Arrival alerts are deduplicated by the main-loop usage mode policy.
+    {
+        RxDebugTimer timing(RxDebugStage::Parse);
+        readDataLBJ(bond.pocsagData, &bond.lbjData);
+    }
+    noteRxDebugDecoded(bond.lbjData.type);
+    // Each decoded train reception is handled by the main-loop usage mode policy.
     debugLogStageTimingSd(2, "LBJ读取完成，用时[%llu]\n", millis64() - runtimeStartMs);
     debugLogStageTiming("Read complete.[%llu]", millis64() - runtimeStartMs);
 }

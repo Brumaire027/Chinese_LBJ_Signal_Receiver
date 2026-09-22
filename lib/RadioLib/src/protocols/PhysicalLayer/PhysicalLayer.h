@@ -3,6 +3,12 @@
 
 #include "../../TypeDef.h"
 #include "../../Module.h"
+#include "DirectDiagnostics.h"
+#include "DirectReceiveBuffer.h"
+#if defined(ARDUINO_ARCH_ESP32)
+#include <freertos/FreeRTOS.h>
+#include <freertos/portmacro.h>
+#endif
 
 /*!
   \class PhysicalLayer
@@ -14,6 +20,7 @@
 */
 class PhysicalLayer {
   public:
+    RadioDirectDiagnostics directDiagnostics;
 
     // constructor
 
@@ -377,10 +384,11 @@ class PhysicalLayer {
     size_t maxPacketLength;
 
     #if !defined(RADIOLIB_EXCLUDE_DIRECT_RECEIVE)
-    uint8_t bufferBitPos;
-    uint8_t bufferWritePos;
-    uint8_t bufferReadPos;
-    uint8_t buffer[RADIOLIB_STATIC_ARRAY_SIZE];
+    DirectReceiveByte incomingByte;
+    DirectReceiveBuffer<RADIOLIB_STATIC_ARRAY_SIZE> receiveBuffer;
+    #if defined(ARDUINO_ARCH_ESP32)
+    portMUX_TYPE receiveMux = portMUX_INITIALIZER_UNLOCKED;
+    #endif
     uint32_t syncBuffer;
     uint64_t preambleBuffer;
     uint64_t carrierBuffer;

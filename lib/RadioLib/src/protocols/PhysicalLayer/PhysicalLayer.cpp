@@ -5,8 +5,7 @@ PhysicalLayer::PhysicalLayer(float step, size_t maxLen) {
   this->freqStep = step;
   this->maxPacketLength = maxLen;
   #if !defined(RADIOLIB_EXCLUDE_DIRECT_RECEIVE)
-  this->bufferBitPos = 0;
-  this->bufferWritePos = 0;
+  this->incomingByte.clear();
   #endif
 }
 
@@ -310,22 +309,43 @@ int16_t PhysicalLayer::startDirect() {
 
 #if !defined(RADIOLIB_EXCLUDE_DIRECT_RECEIVE)
 int16_t PhysicalLayer::available() {
-  return(this->bufferWritePos);
+  #if defined(ARDUINO_ARCH_ESP32)
+  portENTER_CRITICAL(&receiveMux);
+  #endif
+  const int16_t count = receiveBuffer.available();
+  #if defined(ARDUINO_ARCH_ESP32)
+  portEXIT_CRITICAL(&receiveMux);
+  #endif
+  return count;
 }
 
 void PhysicalLayer::dropSync() {
+  #if defined(ARDUINO_ARCH_ESP32)
+  portENTER_CRITICAL(&receiveMux);
+  #endif
   if(this->directSyncWordLen > 0) {
     this->gotSync = false;
     this->syncBuffer = 0;
   }
+  #if defined(ARDUINO_ARCH_ESP32)
+  portEXIT_CRITICAL(&receiveMux);
+  #endif
 }
 
 uint8_t PhysicalLayer::read(bool drop) {
-  if(drop) {
-    dropSync();
+  #if defined(ARDUINO_ARCH_ESP32)
+  portENTER_CRITICAL(&receiveMux);
+  #endif
+  if(drop && this->directSyncWordLen > 0) {
+    this->gotSync = false;
+    this->syncBuffer = 0;
   }
-  this->bufferWritePos--;
-  return(this->buffer[this->bufferReadPos++]);
+  uint8_t value = 0;
+  receiveBuffer.pop(value); // Empty reads cannot underflow the count.
+  #if defined(ARDUINO_ARCH_ESP32)
+  portEXIT_CRITICAL(&receiveMux);
+  #endif
+  return value;
 }
 
 int16_t PhysicalLayer::setDirectSyncWord(uint32_t syncWord, uint8_t len) {
@@ -345,6 +365,9 @@ int16_t PhysicalLayer::setDirectSyncWord(uint32_t syncWord, uint8_t len) {
 }
 
 void PhysicalLayer::updateDirectBuffer(uint8_t bit) {
+  #if defined(ARDUINO_ARCH_ESP32)
+  portENTER_CRITICAL_ISR(&receiveMux);
+  #endif
   // check carrier
   if(!this->gotCarrier && !this->gotPreamble && !this->gotSync) {
     this->carrierBuffer <<=1;
@@ -371,33 +394,27 @@ void PhysicalLayer::updateDirectBuffer(uint8_t bit) {
     this->syncBuffer <<= 1;
     this->syncBuffer |= bit;
 
-    RADIOLIB_VERBOSE_PRINTLN("S\t%lu", this->syncBuffer);
+    // Never print from the receive critical section.
 
     if((this->syncBuffer & this->directSyncWordMask) == this->directSyncWord) {
+      this->directDiagnostics.synchronized(this->receiveBuffer.clear());
       this->gotSync = true;
-      this->bufferWritePos = 0;
-      this->bufferReadPos = 0;
-      this->bufferBitPos = 0;
+      this->incomingByte.clear();
     }
 
   } else {
-    // save the bit
-    if(bit) {
-      this->buffer[this->bufferWritePos] |= 0x01 << this->bufferBitPos;
-    } else {
-      this->buffer[this->bufferWritePos] &= ~(0x01 << this->bufferBitPos);
-    }
-    this->bufferBitPos++;
-
-    // check complete byte
-    if(this->bufferBitPos == 8) {
-      this->buffer[this->bufferWritePos] = Module::reflect(this->buffer[this->bufferWritePos], 8);
-      RADIOLIB_VERBOSE_PRINTLN("R\t%X", this->buffer[this->bufferWritePos]);
-
-      this->bufferWritePos++;
-      this->bufferBitPos = 0;
+    // Assemble outside the published FIFO so readers never see a partial byte.
+    uint8_t value = 0;
+    if(this->incomingByte.pushBit(bit, value)) {
+      if(this->receiveBuffer.push(value))
+        this->directDiagnostics.completedByte(this->receiveBuffer.available());
+      else
+        this->directDiagnostics.droppedByte();
     }
   }
+  #if defined(ARDUINO_ARCH_ESP32)
+  portEXIT_CRITICAL_ISR(&receiveMux);
+  #endif
 }
 
 void PhysicalLayer::setDirectAction(void (*func)(void)) {

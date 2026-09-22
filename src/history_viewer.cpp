@@ -5,6 +5,12 @@
 #include "utilities.h"
 #include "use_mode.hpp"
 #include "storage_paths.hpp"
+#include "history_policy.hpp"
+#include "history_stream.hpp"
+#include "task_state.hpp"
+
+extern SX1276 radio;
+extern PagerClient pager;
 
 #ifdef HAS_SDCARD
 #include <SD.h>
@@ -19,6 +25,7 @@ namespace {
 
 bool historyActive = false;
 bool historyDirty = false;
+bool historyEnterUp = false;
 
 constexpr uint8_t MAX_HISTORY_RECORDS = 20;
 constexpr size_t MAX_HISTORY_SCAN_BYTES = 32UL * 1024UL;
@@ -41,11 +48,12 @@ struct HistoryRecord {
     char timestamp[HISTORY_TIME_LENGTH];
     char trainLine[HISTORY_LINE_LENGTH];
     char detailLine[HISTORY_LINE_LENGTH];
-    char packetLine[HISTORY_LINE_LENGTH];
+    char locoLine[HISTORY_LINE_LENGTH];
 };
 
 enum class HistoryLoadStatus : uint8_t {
     NotLoaded,
+    Loading,
     Ready,
     NoSd,
     NoCsvFile,
@@ -206,59 +214,51 @@ void buildRecordTimestamp(const char *line, char *dest, size_t destSize) {
     }
 }
 
-bool extractFirstPacketId(const char *line, char *dest, size_t destSize) {
-    if (destSize == 0)
-        return false;
-
-    dest[0] = '\0';
-    const char *packet = std::strchr(line, '[');
-    while (packet) {
-        const char *cursor = packet + 1;
-        if (*cursor >= '0' && *cursor <= '9') {
-            size_t out = 0;
-            while (*cursor && *cursor != ':' && *cursor != ']' && out + 1 < destSize) {
-                dest[out++] = *cursor++;
-            }
-            dest[out] = '\0';
-            return out > 0;
-        }
-        packet = std::strchr(packet + 1, '[');
-    }
-
-    return false;
-}
-
-void buildRecordLines(const char *line, HistoryRecord &record) {
-    char lbjClass[CSV_FIELD_LENGTH];
-    char train[CSV_FIELD_LENGTH];
-    char speed[CSV_FIELD_LENGTH];
-    char position[CSV_FIELD_LENGTH];
-    char packet[CSV_FIELD_LENGTH];
+bool buildRecordLines(const char *line, HistoryRecord &record) {
+    char lbjClass[CSV_FIELD_LENGTH], train[CSV_FIELD_LENGTH], speed[CSV_FIELD_LENGTH];
+    char position[CSV_FIELD_LENGTH], loco[CSV_FIELD_LENGTH], route[CSV_FIELD_LENGTH];
+    char lat[CSV_FIELD_LENGTH], lon[CSV_FIELD_LENGTH], hex[CSV_FIELD_LENGTH];
     extractCsvField(line, CSV_FIELD_CLASS, lbjClass, sizeof(lbjClass));
     extractCsvField(line, CSV_FIELD_TRAIN, train, sizeof(train));
-    char hex[CSV_FIELD_LENGTH];
-    extractCsvField(line, 15, hex, sizeof(hex));
-    makeTrainKey(train, lbjClass, record.trainKey, isUsefulField(hex));
     extractCsvField(line, CSV_FIELD_SPEED, speed, sizeof(speed));
     extractCsvField(line, CSV_FIELD_POSITION, position, sizeof(position));
-
-    const char *displayClass = isUsefulField(lbjClass) ? lbjClass : "-";
-    const char *displayTrain = isUsefulField(train) ? train : "-";
-    const char *displaySpeed = isUsefulField(speed) ? speed : "-";
-    const char *displayPosition = isUsefulField(position) ? position : "-";
-
-    std::snprintf(record.trainLine, sizeof(record.trainLine), "级:%s 车:%s", displayClass, displayTrain);
-    std::snprintf(record.detailLine, sizeof(record.detailLine), "速:%s 公里:%s", displaySpeed, displayPosition);
-
-    if (extractFirstPacketId(line, packet, sizeof(packet))) {
-        std::snprintf(record.packetLine, sizeof(record.packetLine), "报文:%s", packet);
-        return;
+    extractCsvField(line, 11, loco, sizeof(loco));
+    extractCsvField(line, 12, route, sizeof(route));
+    extractCsvField(line, 13, lat, sizeof(lat));
+    extractCsvField(line, 14, lon, sizeof(lon));
+    extractCsvField(line, 15, hex, sizeof(hex));
+    if (!history_policy::useful(train, speed, position, loco, route, lat, lon)) return false;
+    makeTrainKey(train, lbjClass, record.trainKey, isUsefulField(hex));
+    const bool classValid = lbjClass[0] >= 'A' && lbjClass[0] <= 'Z' &&
+        lbjClass[0] != 'X' && !lbjClass[1];
+    const bool speedValid = display_fields::number(speed);
+    const bool positionValid = display_fields::number(position, true);
+    std::snprintf(record.trainLine, sizeof(record.trainLine), "车:%s%s 速:%s",
+        classValid ? lbjClass : "", display_fields::number(train) ? train : "--",
+        speedValid ? speed : "--");
+    const bool routeValid = history_policy::route(route);
+    std::snprintf(record.detailLine, sizeof(record.detailLine), "线:%s %sK",
+        routeValid ? route : "--", positionValid ? position : "--");
+    // If coordinates are the only decoded content, make that reason for retaining the record visible.
+    if (!routeValid && !positionValid) {
+        if (history_policy::coordinate(lat, 8))
+            std::snprintf(record.detailLine, sizeof(record.detailLine), "纬:%s", lat);
+        else if (history_policy::coordinate(lon, 9))
+            std::snprintf(record.detailLine, sizeof(record.detailLine), "经:%s", lon);
     }
-
-    copyCleanText(record.packetLine, sizeof(record.packetLine), "报文:未知");
+    // Keep the full locomotive number on its own row instead of squeezing it beside the route.
+    std::snprintf(record.locoLine, sizeof(record.locoLine), "机车:%s",
+        display_fields::digits(loco, 8) ? loco : "--");
+    if (!display_fields::digits(loco, 8) && history_policy::coordinate(lon, 9))
+        std::snprintf(record.locoLine, sizeof(record.locoLine), "经:%s", lon);
+    return true;
 }
 
 void appendHistoryRecord(const char *line) {
+    HistoryRecord record{};
+    // Empty receptions must not consume one of the twenty history slots.
+    if (!buildRecordLines(line, record)) return;
+    buildRecordTimestamp(line, record.timestamp, sizeof(record.timestamp));
     if (historyRecordCount == MAX_HISTORY_RECORDS) {
         for (uint8_t i = 1; i < MAX_HISTORY_RECORDS; ++i) {
             historyRecords[i - 1] = historyRecords[i];
@@ -266,14 +266,12 @@ void appendHistoryRecord(const char *line) {
         historyRecordCount = MAX_HISTORY_RECORDS - 1;
     }
 
-    HistoryRecord &record = historyRecords[historyRecordCount++];
-    buildRecordTimestamp(line, record.timestamp, sizeof(record.timestamp));
-    buildRecordLines(line, record);
+    historyRecords[historyRecordCount++] = record;
 }
 
 void processCsvLine(char *line) {
     const char *dataStart = findDataStart(line);
-    if (!dataStart)
+    if (!dataStart || !history_stream::completeRecord(dataStart))
         return;
     appendHistoryRecord(dataStart);
 }
@@ -300,126 +298,112 @@ bool parseCsvFileNumber(const char *name, uint16_t &number) {
     return true;
 }
 
-bool findLatestCsvPath(const char *directory, char *path, size_t pathSize) {
-    File dir = SD.open(directory, FILE_READ);
-    if (!dir || !dir.isDirectory()) {
-        clearHistoryRecords(HistoryLoadStatus::NoCsvFile);
-        return false;
-    }
+enum class LoadPhase { Idle, OpenDirectory, Directory, OpenCsv, Read };
+LoadPhase loadPhase = LoadPhase::Idle;
+File historyDirectory, historyCsv;
+uint16_t highestNumber = 0;
+bool foundCsv = false;
+size_t remainingBytes = 0;
+history_stream::Line<MAX_CSV_LINE_LENGTH> historyLine;
+int previousReceiveBytes = -1;
+uint32_t quietSince = 0;
 
-    bool found = false;
-    uint16_t highestNumber = 0;
-    while (true) {
-        File entry = dir.openNextFile();
-        if (!entry)
-            break;
-
-        if (!entry.isDirectory()) {
-            uint16_t number = 0;
-            if (parseCsvFileNumber(entry.name(), number) && (!found || number > highestNumber)) {
-                highestNumber = number;
-                found = true;
-            }
-        }
-        entry.close();
-    }
-    dir.close();
-
-    if (!found) {
-        clearHistoryRecords(HistoryLoadStatus::NoCsvFile);
-        return false;
-    }
-
-    std::snprintf(path, pathSize, "%s/CSV_%04u.csv", directory, highestNumber);
-    return true;
+void closeHistoryFiles() {
+    historyCsv.close(); historyDirectory.close(); loadPhase = LoadPhase::Idle;
+}
+void finishHistoryLoad(HistoryLoadStatus status) {
+    closeHistoryFiles();
+    historyLoadStatus = status;
+    historySelectedIndex = history_policy::entry(historyRecordCount, historyEnterUp);
+    historyDirty = true;
 }
 
-void readRecentRecordsFromCsv(const char *path) {
-    File csv = SD.open(path, FILE_READ);
-    if (!csv) {
-        clearHistoryRecords(HistoryLoadStatus::ReadError);
+void stepHistoryLoad() {
+    if (loadPhase == LoadPhase::Idle) return;
+    // One bounded slice per main-loop turn, only after the receiver has had
+    // first opportunity to consume a batch. A single SD operation can still stall.
+    const int bytes = radio.available();
+    const uint32_t now = millis();
+    if (fd_state.load() != TASK_INIT || pager.available() >= 2 || bytes != previousReceiveBytes) {
+        previousReceiveBytes = bytes; quietSince = now; return;
+    }
+    if (uint32_t(now - quietSince) < 120) return;
+    if (!have_sd) { finishHistoryLoad(HistoryLoadStatus::NoSd); return; }
+    if (loadPhase == LoadPhase::OpenDirectory) {
+        historyDirectory = SD.open(StoragePaths::Records, FILE_READ);
+        if (!historyDirectory || !historyDirectory.isDirectory()) {
+            finishHistoryLoad(HistoryLoadStatus::NoCsvFile); return;
+        }
+        loadPhase = LoadPhase::Directory;
         return;
     }
-
-    const size_t fileSize = csv.size();
-    const size_t scanStart = fileSize > MAX_HISTORY_SCAN_BYTES ? fileSize - MAX_HISTORY_SCAN_BYTES : 0;
-    if (scanStart > 0) {
-        if (!csv.seek(scanStart)) {
-            csv.close();
-            clearHistoryRecords(HistoryLoadStatus::ReadError);
-            return;
+    if (loadPhase == LoadPhase::Directory) {
+        File entry = historyDirectory.openNextFile();
+        if (entry) {
+            uint16_t number = 0;
+            if (!entry.isDirectory() && parseCsvFileNumber(entry.name(), number) &&
+                (!foundCsv || number > highestNumber)) {
+                foundCsv = true; highestNumber = number;
+            }
+            entry.close(); return;
         }
-
-        while (csv.available()) {
-            const char c = static_cast<char>(csv.read());
-            if (c == '\n')
-                break;
-        }
+        historyDirectory.close();
+        if (!foundCsv) { finishHistoryLoad(HistoryLoadStatus::NoCsvFile); return; }
+        loadPhase = LoadPhase::OpenCsv;
+        return;
     }
-
-    char line[MAX_CSV_LINE_LENGTH];
-    size_t lineLength = 0;
-    while (csv.available()) {
-        const char c = static_cast<char>(csv.read());
-        if (c == '\r')
-            continue;
-
-        if (c == '\n') {
-            line[lineLength] = '\0';
-            processCsvLine(line);
-            lineLength = 0;
-            continue;
-        }
-
-        if (lineLength + 1 < sizeof(line)) {
-            line[lineLength++] = c;
-        }
+    if (loadPhase == LoadPhase::OpenCsv) {
+        char path[40];
+        std::snprintf(path, sizeof(path), "%s/CSV_%04u.csv", StoragePaths::Records, highestNumber);
+        historyCsv = SD.open(path, FILE_READ);
+        if (!historyCsv) { finishHistoryLoad(HistoryLoadStatus::ReadError); return; }
+        const size_t fileSize = historyCsv.size();
+        const size_t start = fileSize > MAX_HISTORY_SCAN_BYTES ? fileSize - MAX_HISTORY_SCAN_BYTES : 0;
+        if (start && !historyCsv.seek(start)) { finishHistoryLoad(HistoryLoadStatus::ReadError); return; }
+        // Freeze the end offset so concurrent appends cannot extend this scan.
+        remainingBytes = fileSize - start;
+        historyLine.reset(start != 0);
+        loadPhase = LoadPhase::Read;
+        return;
     }
-
-    if (lineLength > 0) {
-        line[lineLength] = '\0';
-        processCsvLine(line);
+    if (remainingBytes) {
+        uint8_t chunk[256];
+        const size_t requested = remainingBytes < sizeof(chunk) ? remainingBytes : sizeof(chunk);
+        const int count = historyCsv.read(chunk, requested);
+        if (count <= 0) { finishHistoryLoad(HistoryLoadStatus::ReadError); return; }
+        remainingBytes -= static_cast<size_t>(count);
+        for (int i = 0; i < count; ++i)
+            if (historyLine.push(static_cast<char>(chunk[i]))) processCsvLine(historyLine.data);
     }
-
-    csv.close();
-
-    if (historyRecordCount == 0) {
-        historyLoadStatus = HistoryLoadStatus::NoRecords;
-    } else {
-        historySelectedIndex = historyRecordCount - 1;
-        historyLoadStatus = HistoryLoadStatus::Ready;
-    }
+    if (!remainingBytes)
+        finishHistoryLoad(historyRecordCount ? HistoryLoadStatus::Ready : HistoryLoadStatus::NoRecords);
 }
 #endif
 
 void loadRecentHistoryRecords() {
-    clearHistoryRecords(HistoryLoadStatus::NotLoaded);
-
+#ifdef HAS_SDCARD
+    closeHistoryFiles();
+#endif
+    clearHistoryRecords(HistoryLoadStatus::Loading);
+    historyDirty = true;
 #ifndef HAS_SDCARD
-    clearHistoryRecords(HistoryLoadStatus::NoSd);
+    historyLoadStatus = HistoryLoadStatus::NoSd;
 #else
-    if (!have_sd) {
-        clearHistoryRecords(HistoryLoadStatus::NoSd);
-        return;
-    }
-
-    char latestCsvPath[40];
-    if (findLatestCsvPath(StoragePaths::Records, latestCsvPath, sizeof(latestCsvPath)))
-        readRecentRecordsFromCsv(latestCsvPath);
+    if (!have_sd) { historyLoadStatus = HistoryLoadStatus::NoSd; return; }
+    foundCsv = false; highestNumber = 0;
+    previousReceiveBytes = -1; quietSince = millis();
+    loadPhase = LoadPhase::OpenDirectory;
 #endif
 }
 
 void moveHistory(HistoryEntryDirection direction) {
-    if (historyRecordCount == 0) {
+    if (historyLoadStatus == HistoryLoadStatus::Loading || historyRecordCount == 0) {
         historyDirty = true;
         return;
     }
 
-    if (direction == HistoryEntryDirection::Previous) {
-        historySelectedIndex = historySelectedIndex == 0 ? historyRecordCount - 1 : historySelectedIndex - 1;
-    } else {
-        historySelectedIndex = (historySelectedIndex + 1) % historyRecordCount;
-    }
+    historySelectedIndex = history_policy::move(historyRecordCount, historySelectedIndex,
+        direction == HistoryEntryDirection::Previous);
     historyDirty = true;
 }
 
@@ -428,15 +412,16 @@ void renderHistory() {
     const char *lines[4];
     if (historyLoadStatus == HistoryLoadStatus::Ready && historyRecordCount > 0) {
         const HistoryRecord &record = historyRecords[historySelectedIndex];
-        std::snprintf(title, sizeof(title), "历史 %u/%u", unsigned(historySelectedIndex + 1), unsigned(historyRecordCount));
+        std::snprintf(title, sizeof(title), "历史 %u/%u", unsigned(history_policy::number(historyRecordCount, historySelectedIndex)), unsigned(historyRecordCount));
         lines[0] = record.timestamp;
         lines[1] = record.trainLine;
         lines[2] = record.detailLine;
-        lines[3] = record.packetLine;
+        lines[3] = record.locoLine;
     } else {
         std::snprintf(title, sizeof(title), "历史记录");
         const char *statusLine = "尚未读取";
         switch (historyLoadStatus) {
+            case HistoryLoadStatus::Loading: statusLine = "正在读取记录"; break;
             case HistoryLoadStatus::NoSd: statusLine = "存储卡不可用"; break;
             case HistoryLoadStatus::NoCsvFile: statusLine = "未找到记录文件"; break;
             case HistoryLoadStatus::NoRecords: statusLine = "暂无记录"; break;
@@ -444,7 +429,8 @@ void renderHistory() {
             default: break;
         }
         lines[0] = statusLine;
-        lines[1] = "请检查存储卡";
+        lines[1] = historyLoadStatus == HistoryLoadStatus::Loading ? "接收优先，请稍候" :
+            historyLoadStatus == HistoryLoadStatus::NoRecords ? "" : "请检查存储卡";
         lines[2] = "";
         lines[3] = "";
     }
@@ -460,8 +446,21 @@ void initHistoryViewer() {
     setHistoryDisplayActive(false);
 }
 
+void requestHistoryLoad() { loadRecentHistoryRecords(); }
+bool historyLoadPending() { return historyLoadStatus == HistoryLoadStatus::Loading; }
+void cancelHistoryLoad() {
+#ifdef HAS_SDCARD
+    closeHistoryFiles();
+#endif
+    if (historyLoadPending()) clearHistoryRecords(HistoryLoadStatus::NotLoaded);
+}
+void processHistoryLoad() {
+#ifdef HAS_SDCARD
+    stepHistoryLoad();
+#endif
+}
 uint8_t loadHistoryTrainChoices(char (*keys)[9], uint8_t capacity) {
-    loadRecentHistoryRecords();
+    if (historyLoadStatus != HistoryLoadStatus::Ready) return 0;
     uint8_t count = 0;
     for (int i = historyRecordCount - 1; i >= 0 && count < capacity; --i) {
         const char *key = historyRecords[i].trainKey;
@@ -480,14 +479,15 @@ bool isHistoryViewerActive() {
 void enterHistoryViewer(HistoryEntryDirection direction) {
     historyActive = true;
     setHistoryDisplayActive(true);
+    historyEnterUp = direction == HistoryEntryDirection::Previous;
     loadRecentHistoryRecords();
-    if (historyRecordCount > 1 && direction == HistoryEntryDirection::Previous) {
-        historySelectedIndex = historyRecordCount - 1;
-    }
+    historySelectedIndex = history_policy::entry(historyRecordCount,
+        direction == HistoryEntryDirection::Previous);
     historyDirty = true;
 }
 
 void exitHistoryViewer() {
+    cancelHistoryLoad();
     historyActive = false;
     historyDirty = false;
     setHistoryDisplayActive(false);
@@ -509,6 +509,7 @@ void handleHistoryButtonEvent(const ButtonEvent &event) {
 
     switch (event.id) {
         case ButtonId::Key1:
+            historyEnterUp = false;
             loadRecentHistoryRecords();
             historyDirty = true;
             break;

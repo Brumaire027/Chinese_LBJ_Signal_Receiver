@@ -1,3 +1,4 @@
+#include "reception_debug.hpp"
 #include "recording_health.hpp"
 //
 // Created by FLN1021 on 2023/9/5.
@@ -240,7 +241,9 @@ void SD_LOG::writeHeaderCSV() { // TODO: needs more confirmation about title.
     // Serial.printf("Write hdr end\n");
 }
 
-void SD_LOG::appendCSV(const char *format, ...) { // TODO: maybe implement item based csv append?
+void SD_LOG::appendCSV(const char *format, ...) {
+    if (!rxDebugAllowCsv()) return;
+    RxDebugTimer timing(RxDebugStage::Csv); // TODO: maybe implement item based csv append?
     if (!sd_csv) {
         return;
     }
@@ -270,7 +273,7 @@ void SD_LOG::appendCSV(const char *format, ...) { // TODO: maybe implement item 
         }
         is_startline_csv = false;
     }
-    if (nullptr != strchr(format, '\n')) /* detect end of line in stream */
+    if (nullptr != strchr(buffer, '\n')) /* detect end of line in stream */
         is_startline_csv = true;
     CheckedRecordPrint(csv, RecordChannel::Csv).print(buffer);
     csv.flush();
@@ -278,6 +281,8 @@ void SD_LOG::appendCSV(const char *format, ...) { // TODO: maybe implement item 
 }
 
 void SD_LOG::append(const char *format, ...) {
+    if (!rxDebugAllowLog()) return;
+    RxDebugTimer timing(RxDebugStage::Log);
     // Serial.printf("[D] Using log %s\n", log_path.c_str());
     if (!sd_log) {
         // Serial.println("[D] sd_log false.");
@@ -307,7 +312,7 @@ void SD_LOG::append(const char *format, ...) {
         }
         is_startline = false;
     }
-    if (nullptr != strchr(format, '\n')) /* detect end of line in stream */
+    if (nullptr != strchr(buffer, '\n')) /* detect end of line in stream */
         is_startline = true;
     CheckedRecordPrint(log, RecordChannel::Log).print(buffer);
     log.flush();
@@ -316,6 +321,7 @@ void SD_LOG::append(const char *format, ...) {
 }
 
 void SD_LOG::append(int level, const char *format, ...) {
+    if (!rxDebugAllowLog()) return;
     if (level > LOG_VERBOSITY)
         return;
     appendBuffer("[DEBUG-%d] ", level);
@@ -324,11 +330,12 @@ void SD_LOG::append(int level, const char *format, ...) {
     va_start(args, format);
     vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
-    appendBuffer(buffer);
+    appendBuffer("%s", buffer);
     sendBufferLOG();
 }
 
 void SD_LOG::appendBuffer(const char *format, ...) {
+    if (!rxDebugAllowLog()) return;
     if (!sd_log)
         return;
     char buffer[256];
@@ -349,12 +356,13 @@ void SD_LOG::appendBuffer(const char *format, ...) {
         delete[] time_buffer;
         is_startline = false;
     }
-    if (nullptr != strchr(format, '\n')) /* detect end of line in stream */
+    if (nullptr != strchr(buffer, '\n')) /* detect end of line in stream */
         is_startline = true;
     large_buffer += buffer;
 }
 
 void SD_LOG::appendBuffer(int level, const char *format, ...) {
+    if (!rxDebugAllowLog()) return;
     if (level > LOG_VERBOSITY)
         return;
     appendBuffer("[DEBUG-%d] ", level);
@@ -363,10 +371,12 @@ void SD_LOG::appendBuffer(int level, const char *format, ...) {
     va_start(args, format);
     vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
-    appendBuffer(buffer);
+    appendBuffer("%s", buffer);
 }
 
 void SD_LOG::sendBufferLOG(bool flushAfterWrite) {
+    if (!rxDebugAllowLog()) return;
+    RxDebugTimer timing(RxDebugStage::Log);
     if (!sd_log)
         return;
     if (!filesys->exists(log_path)) {
@@ -391,6 +401,7 @@ void SD_LOG::sendBufferLOG(bool flushAfterWrite) {
 }
 
 void SD_LOG::appendBufferCSV(const char *format, ...) {
+    if (!rxDebugAllowCsv()) return;
     if (!sd_csv)
         return;
     char buffer[256];
@@ -420,12 +431,14 @@ void SD_LOG::appendBufferCSV(const char *format, ...) {
         delete[] headers;
         is_startline_csv = false;
     }
-    if (nullptr != strchr(format, '\n')) /* detect end of line in stream */
+    if (nullptr != strchr(buffer, '\n')) /* detect end of line in stream */
         is_startline_csv = true;
     large_buffer_csv += buffer;
 }
 
 void SD_LOG::sendBufferCSV(bool flushAfterWrite) {
+    if (!rxDebugAllowCsv()) return;
+    RxDebugTimer timing(RxDebugStage::Csv);
     if (!sd_csv) {
         return;
     }
@@ -449,6 +462,8 @@ void SD_LOG::sendBufferCSV(bool flushAfterWrite) {
 }
 
 void SD_LOG::flushCSV() {
+    if (!rxDebugAllowCsv()) return;
+    RxDebugTimer timing(RxDebugStage::Csv);
     if (!sd_csv || !csv)
         return;
     csv.flush();
@@ -585,6 +600,7 @@ int SD_LOG::beginCD(const char *path) {
 }
 
 void SD_LOG::appendCD(const uint8_t *data, size_t size) {
+    if (!rxDebugAllowCsv()) return;
     if (!sd_cd)
         return;
     cd.write(data, size);

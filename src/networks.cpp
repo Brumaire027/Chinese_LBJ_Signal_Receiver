@@ -1,8 +1,11 @@
+#include "reception_policy.hpp"
 //
 // Created by FLN1021 on 2023/9/2.
 //
 
 #include "networks.hpp"
+#include "pager_error_stats.hpp"
+#include "route_encoding.hpp"
 
 #include "debug_log.hpp"
 
@@ -410,6 +413,8 @@ int16_t readDataLBJ(struct PagerClient::pocsag_data *p, struct lbj_data *l) {
                     debugLogVerbosePrintln("Transformed type.");
                     goto lbj_sync;
                 } else {
+                    // A new basic report starts a new snapshot, even in the same receive batch.
+                    *l = lbj_data{};
                     l->type = 0;
                     l->direction = (int8_t) p[i].func;
 
@@ -455,7 +460,14 @@ int16_t readDataLBJ(struct PagerClient::pocsag_data *p, struct lbj_data *l) {
                 }
             }
             case LBJ_INFO2_ADDR: {
-                l->type = 1; // type = 1 when implemented.
+                // Preserve only an immediately preceding basic report of the same direction.
+                // A second extension must not append hex or inherit fields from the first.
+                if (p[i].addr == LBJ_INFO2_ADDR &&
+                    !reception_policy::attachExtension(
+                        i > 0 && !p[i-1].is_empty && p[i-1].addr == LBJ_INFO_ADDR,
+                        l->type, l->direction, (int8_t)p[i].func))
+                    *l = lbj_data{};
+                l->type = 1;
                 String buffer;
                 if (p[i].addr == LBJ_INFO_ADDR) {
                     if (p[i].str.length() == 65)
@@ -580,11 +592,13 @@ int16_t readDataLBJ(struct PagerClient::pocsag_data *p, struct lbj_data *l) {
                             l->route[c] = ch;
                     }
                 }
-                gbk2utf8(l->route, l->route_utf8, 17);
+                gbk2utf8(l->route, l->route_utf8, sizeof(l->route), sizeof(l->route_utf8));
                 break;
             }
             case LBJ_SYNC_ADDR: {
                 lbj_sync:
+                // A time broadcast cannot replace a train report in this batch.
+                if (l->type == 0 || l->type == 1) break;
                 l->type = 2;
                 if (p[i].str.length() >= 5 && p[i].str[0] != 'X') {
                     for (size_t c = 1, v = 0; c < 5; c++, v++) {
@@ -701,38 +715,9 @@ int enc_unicode_to_utf8_one(unsigned long unic, unsigned char *pOutput) {
     return 0;
 }
 
-void gbk2utf8(const char *gbk1, char *utf8s, size_t gbk_len) {
-    uint16_t unic[gbk_len];
-    uint8_t gbk[gbk_len];
-
-    size_t c = 0;
-    for (size_t i = 0; i < gbk_len; i++) {
-        gbk[i] = (uint8_t) gbk1[i];
-    }
-    for (size_t i = 0; i < gbk_len; i++, c++) {
-        if (gbk[i] < 0x80) {
-            unic[c] = gbk[i];
-        } else {
-            unic[c] = ff_oem2uni((uint16_t) (gbk[i] << 8 | gbk[i + 1]), 936);
-            i++;
-        }
-    }
-    c = 0;
-    size_t i = 0;
-    uint8_t utf8[gbk_len * 2];
-    for (; i < gbk_len * 2; i++, c++) {
-        uint8_t ut8[4];
-        int r = enc_unicode_to_utf8_one(unic[c], ut8);
-        if (i + 4 < gbk_len * 2) {
-            if (r == 1) utf8[i] = ut8[0];
-            else if (r == 2) utf8[i] = ut8[0], utf8[++i] = ut8[1];
-            else if (r == 3) utf8[i] = ut8[0], utf8[++i] = ut8[1], utf8[++i] = ut8[2];
-            else if (r == 4) utf8[i] = ut8[0], utf8[++i] = ut8[1], utf8[++i] = ut8[2], utf8[++i] = ut8[3];
-        }
-    }
-    for (size_t v = 0; v < gbk_len * 2; v++) {
-        utf8s[v] = (char) utf8[v];
-    }
+void gbk2utf8(const char *gbk1, char *utf8s, size_t gbk_len, size_t utf8_capacity) {
+    route_encoding::convert(gbk1, gbk_len, utf8s, utf8_capacity,
+        [](uint16_t code) { return ff_oem2uni(code, 936); });
 }
 
 /*---------------------------------------------------------*/
@@ -1038,18 +1023,18 @@ void appendDataCSV(PagerClient::pocsag_data *p, const struct lbj_data &l, const 
             sd1.appendBufferCSV("\"%s\",%3.1f,%4.2f,%.2f,%.2f,", l.info2_hex.c_str(), r.rssi, r.fer,
                                 getBias((float) (actual_frequency + r.fer * 1e-6)), r.ppm);
             sd1.appendBufferCSV("\"");
-            uint8_t err_ttl = 0, err_un = 0, len = 0;
+            PagerErrorStats stats;
             for (size_t i = 0; i < POCDAT_SIZE; i++) {
                 if (p[i].is_empty)
                     continue;
                 sd1.appendBufferCSV("[%d/%d:%s][E:%02d/%02d/%zu]", p[i].addr, p[i].func, p[i].str.c_str(),
                                     p[i].errs_uncorrected, p[i].errs_total, (p[i].len / 5) * 32);
-                err_ttl += p[i].errs_total;
-                err_un += p[i].errs_uncorrected;
-                len += (p[i].len / 5) * 32;
+                stats.add(p[i].len, p[i].errs_total, p[i].errs_uncorrected);
             }
             sd1.appendBufferCSV("\",");
-            sd1.appendBufferCSV("%d/%d,%.2f%%\n", err_un, err_ttl, ((float) err_ttl / (float) len) * 100);
+            sd1.appendBufferCSV("%zu/%zu,", stats.uncorrectedErrors, stats.totalErrors);
+            if (stats.bitCount) sd1.appendBufferCSV("%.2f%%\n", stats.percentage());
+            else sd1.appendBufferCSV("null\n"); // No measurable bits: no error-rate estimate.
             break;
         }
         case 2: {
@@ -1064,18 +1049,18 @@ void appendDataCSV(PagerClient::pocsag_data *p, const struct lbj_data &l, const 
         // sd1.appendBufferCSV("%3.1f,%5.2f,\"", r.rssi, r.fer);
         sd1.appendBufferCSV("%3.1f,%5.2f,%.2f,%.2f,\"", r.rssi, r.fer,
                             getBias((float) (actual_frequency + r.fer * 1e-6)), r.ppm);
-        uint8_t err_un = 0, err_ttl = 0, len = 0;
+        PagerErrorStats stats;
         for (size_t i = 0; i < POCDAT_SIZE; i++) {
             if (p[i].is_empty)
                 continue;
             sd1.appendBufferCSV("[%d/%d:%s][E:%02d/%02d/%zu]", p[i].addr, p[i].func, p[i].str.c_str(),
                                 p[i].errs_uncorrected, p[i].errs_total, (p[i].len / 5) * 32);
-            err_un += p[i].errs_uncorrected;
-            err_ttl += p[i].errs_total;
-            len += (p[i].len / 5) * 32;
+            stats.add(p[i].len, p[i].errs_total, p[i].errs_uncorrected);
         }
         sd1.appendBufferCSV("\",");
-        sd1.appendBufferCSV("%d/%d,%.2f%%\n", err_un, err_ttl, ((float) err_ttl / (float) len) * 100);
+        sd1.appendBufferCSV("%zu/%zu,", stats.uncorrectedErrors, stats.totalErrors);
+        if (stats.bitCount) sd1.appendBufferCSV("%.2f%%\n", stats.percentage());
+        else sd1.appendBufferCSV("null\n"); // No measurable bits: no error-rate estimate.
     }
     sd1.sendBufferCSV(flushAfterWrite);
 }

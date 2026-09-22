@@ -14,7 +14,12 @@ void enterHistoryViewer(HistoryEntryDirection direction);
 void exitHistoryViewer();
 void handleHistoryButtonEvent(const ButtonEvent &event);
 void updateHistoryViewer();
-// Caller uses the idle gate; returns unique identifiers from the latest 20 CSV rows.
+// Loading advances in bounded slices after receiver processing in the main loop.
+void requestHistoryLoad();
+bool historyLoadPending();
+void cancelHistoryLoad();
+void processHistoryLoad();
+// Returns identifiers from the completed snapshot; never performs SD reads.
 uint8_t loadHistoryTrainChoices(char (*keys)[9], uint8_t capacity);
 
 #endif

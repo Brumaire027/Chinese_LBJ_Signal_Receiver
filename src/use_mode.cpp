@@ -1,6 +1,8 @@
+#include "reception_debug.hpp"
 #include "use_mode.hpp"
 #include "recording_health.hpp"
-#include "train_queue.hpp"
+#include "reception_policy.hpp"
+#include "display_fields.hpp"
 #include "train_identity.hpp"
 #include "status_display.hpp"
 #include "display_power.hpp"
@@ -16,10 +18,8 @@
 
 extern bool oled_off;
 namespace {
-TrainQueue queue;
+bool haveStationTrain = false;
 train_identity::Resolver identityResolver;
-lbj_data records[TrainQueue::Capacity];
-float signals[TrainQueue::Capacity] = {};
 bool ride = false, haveRideData = false;
 char locked[9] = {}, displayed[9] = {};
 lbj_data rideData;
@@ -27,7 +27,7 @@ uint32_t lastRide = 0, lastRideDraw = 0;
 File rideFile;
 String ridePath;
 std::atomic<bool> recordFailed{false};
-enum class View { List, Pick, Confirm, Result };
+enum class View { List, Loading, Pick, Confirm, Result };
 View view = View::List;
 uint8_t selected = 0, choice = 0, choiceCount = 0;
 char choices[21][9] = {};
@@ -89,12 +89,14 @@ const char *startRide(const char *key, bool &started) {
     clearRecordingFailure(RecordChannel::Ride);
     ride = true; strncpy(locked, key, sizeof(locked));
     haveRideData = false; lastRideDraw = 0;
-    queue = TrainQueue{};
+    haveStationTrain = false;
     started = true;
     return "已开始随车记录";
 }
 
 void writeRide(const data_bond &bond, const rx_info &info, bool inferred) {
+    if (!rxDebugAllowCsv()) return;
+    RxDebugTimer timing(RxDebugStage::Ride);
     if (recordFailed || !rideFile || !have_sd) { recordFailed = true; reportRecordingFailure(RecordChannel::Ride); return; }
     const auto &d = bond.lbjData;
     tm time{}; char stamp[32] = "时间无效";
@@ -149,33 +151,32 @@ void closeRideRecord() {
 // Main loop only, after formatter DONE and before its bond/radio stats are cleared.
 void acceptModeReception(const data_bond &bond, const rx_info &info) {
     const auto &data = bond.lbjData;
-    if (data.type < 0 || data.type > 1) {
-        if (!ride && queue.current < 0 && data.type >= 0)
+    const bool train = reception_policy::trainReport(data.type);
+    if (!train) {
+        if (reception_policy::displayStation(data.type, ride, haveStationTrain))
             requestDecodedDisplayUpdate(data, millis64(), info.rssi);
         return;
     }
     const auto identity = identityResolver.resolve(data.train, data.lbj_class, data.type == 1,
         data.direction, data.loco, millis());
-    const char *key = identity.key;
-    if (!validTrainKey(key)) return; // Uncertain packets remain in the unmodified total CSV.
-    if (ride && !strcmp(key, locked)) {
-        const bool fresh = !haveRideData || uint32_t(millis() - lastRide) >= 600000U;
-        rideData = data; haveRideData = true; lastRide = millis(); lastRideDraw = 0;
-        writeRide(bond, info, identity.inferred);
-        displayActivity(runtimeSettings().display.wakeOnArrival);
-        if (fresh) alert();
+    const bool matches = validTrainKey(identity.key) && !strcmp(identity.key, locked);
+    if (reception_policy::alertTrain(data.type, ride, matches, runtimeSettings().otherTrainAlerts))
+        alert();
+    if (!ride) {
+        haveStationTrain = true;
+        // Never carry an inferred category or a previous train's fields into this screen.
+        // An incomplete new identity also clears the shortcut for locking the current train.
+        makeTrainKey(data.train, data.lbj_class, displayed, data.type == 1);
+        requestDecodedDisplayUpdate(data, millis64(), info.rssi);
         return;
     }
-    auto arrival = queue.receive(key, millis());
-    if (arrival.slot < 0) return; // Total CSV already saved; only presentation has a bounded queue.
-    records[arrival.slot] = data; signals[arrival.slot] = info.rssi;
-    if (identity.inferred) {
-        records[arrival.slot].lbj_class[0] = key[0] >= 'A' && key[0] <= 'Z' ? key[0] : ' ';
-        records[arrival.slot].lbj_class[1] = 0;
+    if (matches) {
+        rideData = data;
+        display_fields::normalize(rideData);
+        haveRideData = true; lastRide = millis(); lastRideDraw = 0;
+        writeRide(bond, info, identity.inferred);
+        displayActivity(runtimeSettings().display.wakeOnArrival);
     }
-    if (arrival.fresh && (!ride || runtimeSettings().otherTrainAlerts)) alert();
-    if (!ride) displayActivity(runtimeSettings().display.wakeOnArrival);
-    else { queue.entries[arrival.slot].queued = false; queue.count = 0; }
 }
 
 void updateUseMode() {
@@ -187,14 +188,11 @@ void updateUseMode() {
         }
         return;
     }
-    if (queue.advance(millis(), visible)) {
-        const int slot = queue.current;
-        strcpy(displayed, queue.entries[slot].key);
-        requestDecodedDisplayUpdate(records[slot], millis64(), signals[slot], false, displayed);
-    }
+
 }
 
 void resetModeMenu() {
+    if (view == View::Loading) cancelHistoryLoad();
     view = View::List; selected = 0; confirm = true;
     resultAutoExit = false; resultShown = false;
 }
@@ -202,8 +200,20 @@ bool modeMenuShouldExit() {
     return view == View::Result && resultAutoExit && resultShown &&
         uint32_t(millis() - resultShownAt) >= 2000U;
 }
+bool updateModeMenu() {
+    if (view != View::Loading || historyLoadPending()) return false;
+    choiceCount = loadHistoryTrainChoices(choices, 21);
+    choice = 0;
+    if (!choiceCount) { message = "暂无可用历史车次"; view = View::Result; }
+    else view = View::Pick;
+    return true;
+}
 void renderModeMenu() {
-    if (view == View::Result) {
+    if (view == View::Loading) {
+        const char *lines[] = {"正在读取历史车次", "接收优先，请稍候", "返回取消"};
+        showMenuScreen("选择本车", lines, 3, 0, false);
+    }
+    else if (view == View::Result) {
         const char *lines[] = {message}; showMenuScreen("使用模式", lines, 1, 0, false);
         if (resultAutoExit && !resultShown) { resultShownAt = millis(); resultShown = true; }
     }
@@ -223,7 +233,8 @@ void renderModeMenu() {
 }
 bool handleModeButton(ButtonId key) {
     if (view == View::Result && resultAutoExit) return false;
-    if (key == ButtonId::Key4) { if (view == View::List) return true; view = View::List; return false; }
+    if (key == ButtonId::Key4) { if (view == View::List) return true; if (view == View::Loading) cancelHistoryLoad(); view = View::List; return false; }
+    if (view == View::Loading) return false;
     if (view == View::Result) { if (key == ButtonId::Key1) view = View::List; return false; }
     if (view == View::Confirm) {
         if (key == ButtonId::Key2 || key == ButtonId::Key3) confirm = !confirm;
@@ -250,7 +261,7 @@ bool handleModeButton(ButtonId key) {
     if (selected == 0 && ride) {
         const bool saved = flushRideRecord() && !recordFailed.load();
         rideFile.close(); ride = false; locked[0] = 0;
-        queue = TrainQueue{}; displayed[0] = 0;
+        haveStationTrain = false; displayed[0] = 0;
         resetDecodedDisplay();
         message = saved ? "已切换驻守模式" : "已驻守，记录有错误";
         resultAutoExit = true; resultShown = false;
@@ -258,10 +269,8 @@ bool handleModeButton(ButtonId key) {
     } else if (selected == 0 && validTrainKey(displayed)) {
         strcpy(candidate, displayed); confirm = true; view = View::Confirm;
     } else {
-        choiceCount = loadHistoryTrainChoices(choices, 21);
-        choice = 0;
-        if (!choiceCount) { message = "请先接收本车信号"; view = View::Result; }
-        else view = View::Pick;
+        requestHistoryLoad();
+        view = View::Loading;
     }
     return false;
 }

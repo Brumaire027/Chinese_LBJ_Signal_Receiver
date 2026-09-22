@@ -77,7 +77,7 @@ The radio module and SD card share the SPI bus, with separate chip-select pins. 
 | KEY3 | Move down or adjust an option |
 | KEY4 | Return to the previous screen; hold to exit the menu |
 
-From the main screen, KEY2 and KEY3 open reception history. When the display is asleep, the first button press wakes it.
+From the main screen, KEY3 (down) opens the newest reception as record 1; KEY2 (up) opens the oldest retained reception (up to record 20). Down moves toward older records and up toward newer records, wrapping at either end. When the display is asleep, the first button press wakes it.
 
 ## Menu
 
@@ -85,16 +85,16 @@ The device interface uses Chinese labels. English names below describe the corre
 
 | Order | Menu | Function |
 | --- | --- | --- |
-| 1 | Operating Mode (使用模式) | Switch between stationary and onboard modes; select your train |
-| 2 | Sound and Light (声光设置) | Enable or disable the arrival LED and buzzer separately |
-| 3 | Display Settings (显示设置) | Brightness, automatic sleep, wake on arrival, and restore display defaults |
-| 4 | Time Adjustment (时间调整) | Set the date and time manually |
-| 5 | Network Settings (网络设置) | Connection status, phone-based setup, reconnect, and remote connection toggle |
-| 6 | Battery Alert (电量提示) | Enable or disable low-battery alerts; disabled by default |
-| 7 | Logs and Storage (日志存储) | Card status, log status, safe unmount, and remount |
-| 8 | History (历史记录) | View up to 20 recent records from the latest reception CSV file |
-| 9 | System Status (系统状态) | Uptime, memory, and related status; press KEY1 to open reception diagnostics |
-| 10 | About (关于设备) | Firmware version, author, and build date |
+| 1 | Operating Mode | Switch between stationary and onboard modes; select your train |
+| 2 | Sound and Light | Enable or disable the arrival LED and buzzer separately |
+| 3 | Display Settings | Brightness, automatic sleep, wake on arrival, and restore display defaults |
+| 4 | Time Adjustment | Set the date and time manually |
+| 5 | Network Settings | Connection status, phone-based setup, reconnect, and remote connection toggle |
+| 6 | Battery Alert | Enable or disable low-battery alerts; disabled by default |
+| 7 | Logs and Storage | Card status, log status, safe unmount, and remount |
+| 8 | History | View up to 20 recent records from the latest reception CSV file |
+| 9 | System Status | Uptime, memory, and related status; press KEY1 to open reception diagnostics |
+| 10 | About | Firmware version, author, and build date |
 
 ## Operating Modes
 
@@ -102,7 +102,9 @@ The device interface uses Chinese labels. English names below describe the corre
 
 For observing nearby trains from a fixed location.
 
-Repeated messages from the same train update its information, while duplicate suppression reduces repeated alerts. When several trains are received, a display queue reduces frequent switching between them.
+The latest decoded train report replaces the stationary-mode screen, including reports with an incomplete train or locomotive number. Basic and extended reports keep their existing layouts; unavailable fields use dash or asterisk placeholders. Fields are not filled from an earlier train. Rapid receptions coalesce to the latest report within the existing 150 ms display refresh limit; menus and sleep retain the latest report for the next redraw.
+
+Each decoded train reception triggers the enabled LED and buzzer alerts, without train-identity deduplication. The menu can disable either alert immediately. Onboard mode still locks the display and ride log to the selected train and retains its other-train alert switch. Time-only broadcasts do not replace a received train screen.
 
 ### Onboard Mode
 
@@ -139,7 +141,7 @@ If a configuration already exists, the saved network takes priority. A connectio
 
 ### Setup Using a Phone
 
-1. Open **Network Settings → Phone Setup** (网络设置 → 手机配网).
+1. Open **Network Settings → Phone Setup**.
 2. Connect your phone to the device hotspot, `LBJ-Receiver`.
 3. If the setup page does not open automatically, visit `http://192.168.4.1` in a browser.
 4. Select your router or phone hotspot, enter its password, and save.
@@ -166,9 +168,9 @@ The device uses a **DS3231** RTC. Displayed time is Beijing time, **UTC+8**.
 | `/RECORDS` | General reception CSV records |
 | `/RIDES` | Separate CSV files for individual onboard sessions |
 
-General reception recording continues in onboard mode. The history page reads up to 20 recent records from the latest CSV file in `/RECORDS`.
+General reception recording continues in onboard mode. The history page retains up to 20 useful records from the last 32 KiB of the latest CSV file in `/RECORDS`. Empty receptions and time-only records do not occupy slots; partial train information and zero speed remain eligible. The four content rows show timestamp, train/speed, route/kilometer, and locomotive number. Coordinates can use otherwise empty route or locomotive rows. Missing fields use placeholders. Original CSV data is unchanged.
 
-Before removing the card, open **Logs and Storage → Safe Unmount** (日志存储 → 安全卸载) and wait for the “Safe to remove card” message (可以取卡). After reinserting the card, select **Remount** (重新挂载).
+Before removing the card, open **Logs and Storage → Safe Unmount** and wait for the “Safe to remove card” message. After reinserting the card, select **Remount**.
 
 Write failures, capacity-query errors, or insufficient free space cause a blinking **triangle containing an exclamation mark** to appear in the main screen's bottom bar. Check the Logs and Storage pages for more information. The warning disappearing does not mean that previously missed records have been recovered.
 
@@ -252,3 +254,36 @@ This project is adapted from FLN1021's `SX1276_Receive_LBJ`. Thanks to the origi
 ## Usage Notice
 
 This project is intended for learning and experimentation. It must not be used as a basis for railway operations, dispatching, or personal safety decisions. Reception and decoding results may be incomplete or inaccurate because of signal quality and message variations. Use it with care.
+
+
+### Reception diagnostics
+
+Open System Status (系统状态), then confirm Reception Diagnostics (接收诊断).
+Diagnostics are off at boot. Enable them, choose View Statistics, and use up/down
+to browse six pages. Counters and maximum durations are held in RAM only.
+Clear Statistics resets the measurement window without changing the selected mode.
+The test mode cycles through normal recording, no detailed SD log (CSV continues),
+and paused SD reception recording (including onboard CSV). Mode changes clear the
+statistics so different conditions are not mixed. Pausing does not change persistent
+recording settings, suppress reception, or mark storage as failed. Returning from the
+statistics pages keeps the diagnostic session active; returning from the diagnostic
+menu or holding Back to leave the menus stops it and restores normal recording at
+the next completed-record boundary, so an in-flight CSV cannot be split across modes.
+
+The raw buffer counters measure actual sync detections, newest-byte drops on full buffer,
+and unread bytes cleared by a new sync. These are not a count of lost trains, nor a
+complete measurement of all possible corruption. Peak buffer occupancy is captured
+at byte completion; busy occupancy/growth is sampled by the main loop and can miss
+short peaks. Timing pages report maximum raw decode, field parse, individual log/CSV
+write (including flush/fsync), ride write, and formatted-output task duration. Failed
+reads include the last RadioLib error code; damaged batches include X/uncorrected
+markers. Serial/network output and normal display remain enabled in all three modes.
+
+The 256-byte direct receive FIFO uses separate read/write positions and a count
+that can represent 256. When full, new bytes are discarded instead of overwriting
+unread bytes; diagnostics show the discarded-byte count (满缓冲丢弃). ISR and
+main-loop FIFO access are serialized on ESP32. New synchronization keeps the
+existing behavior of clearing previous unread data and records its count.
+Deferred diagnostic exit is processed before starting the next batch, including
+when a continuous backlog exists. These bounds prevent silent overwrite but do
+not promise lossless reception if input outpaces processing indefinitely.

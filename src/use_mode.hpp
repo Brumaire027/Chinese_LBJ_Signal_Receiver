@@ -8,6 +8,7 @@ bool flushRideRecord();
 void closeRideRecord();
 void resetModeMenu();
 void renderModeMenu();
+bool updateModeMenu();
 bool modeMenuShouldExit();
 bool handleModeButton(ButtonId key);
 bool validTrainKey(const char *key);

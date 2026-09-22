@@ -1,3 +1,4 @@
+#include "reception_debug.hpp"
 /*
    SX1276 LBJ Message Receive Project
    Migrated by FLN1021 on Sep 2023.
@@ -70,7 +71,7 @@
 #define FD_TASK_TIMEOUT 750 // ms
 #define FD_TASK_ATTEMPTS 3
 //region Variables
-SX1276 radio = new Module(RADIO_CS_PIN, RADIO_DIO0_PIN, RADIO_RST_PIN, RADIO_DIO1_PIN, SPI);
+SX1276 radio(new Module(RADIO_CS_PIN, RADIO_DIO0_PIN, RADIO_RST_PIN, RADIO_DIO1_PIN, SPI));
 // receiving packets requires connection
 // to the module direct output pin
 const int pin = RADIO_BUSY_PIN;
@@ -491,6 +492,7 @@ void loop() {
         debugLogVerbose("[D] PREAMBLE TIMEOUT.\n");
     }
 
+    updateReceptionDebug();
     processPendingDisplayUpdate();
 
     // if task complete, de-initialize
@@ -602,6 +604,10 @@ void loop() {
 
     handleSync();
 
+    // Consume deferred diagnostic exit after completing the previous record and
+    // before any new batch. Continuous backlog must not starve restoration.
+    updateReceptionDebug();
+
     // the number of batches to wait for
     // 2 batches will usually be enough to fit short and medium messages
     if (pager.available() >= 2 && fd_state == TASK_INIT) { // todo add session timeout exception to prevent stuck here.
@@ -611,7 +617,12 @@ void loop() {
         db = &db_storage;
         runtime_timer = millis64();
         timer4 = millis64();
-        int state = pager.readDataMSA(db->pocsagData, 0);
+        int state;
+        {
+            RxDebugTimer timing(RxDebugStage::Raw);
+            state = pager.readDataMSA(db->pocsagData, 0);
+        }
+        noteRxDebugBatch(state, *db);
         noteReceiverBatch();
 //        sd1.append("[PHY-LAYER][D] AVAILABLE > 2.\n");
         rxInfo.rssi = rxInfo.cnt > 0 ? rssi_cache / (float) rxInfo.cnt : 0;
@@ -724,6 +735,7 @@ void loop() {
     updateUseMode();
     processPendingDisplayUpdate();
     buzzer.update();
+    processHistoryLoad();
     flushDecodedCsvOutputIfDue();
     updateDisplayPower();
     refreshRecordingAlert();
@@ -752,6 +764,8 @@ void formatDataTask(void *pVoid) {
     // Serial.printf("[FD-Task] Stack High Mark Begin %u\n", uxTaskGetStackHighWaterMark(nullptr));
     sd1.append(2, "格式化任务已创建\n");
 
+    {
+    RxDebugTimer timing(RxDebugStage::Batch);
     collectRawPagerData(*db, runtime_timer);
     decodeLbjData(*db, runtime_timer);
     dispatchDecodedOutputs(*db, rxInfo, runtime_timer);
@@ -762,6 +776,7 @@ void formatDataTask(void *pVoid) {
     // sd1.append("[FD-Task] Stack High Mark %u\n", uxTaskGetStackHighWaterMark(nullptr));
     sd1.append(2, "格式化输出任务完成，用时[%llu]\n", millis64() - runtime_timer);
     task_fd = nullptr;
+    }
     fd_state = TASK_DONE;
     vTaskDelete(nullptr);
 }
