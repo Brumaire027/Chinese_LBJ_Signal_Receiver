@@ -263,32 +263,9 @@ This project is intended for learning and experimentation. It must not be used a
 
 ### Reception diagnostics
 
-Open System Status (系统状态), then confirm Reception Diagnostics (接收诊断).
-Diagnostics are off at boot. Enable them, choose View Statistics, and use up/down
-to browse six pages. Counters and maximum durations are held in RAM only.
-Clear Statistics resets the measurement window without changing the selected mode.
-The test mode cycles through normal recording, no detailed SD log (CSV continues),
-and paused SD reception recording (including onboard CSV). Mode changes clear the
-statistics so different conditions are not mixed. Pausing does not change persistent
-recording settings, suppress reception, or mark storage as failed. Returning from the
-statistics pages keeps the diagnostic session active; returning from the diagnostic
-menu or holding Back to leave the menus stops it and restores normal recording at
-the next completed-record boundary, so an in-flight CSV cannot be split across modes.
+Open System Status, then confirm Reception Diagnostics.Diagnostics are off at boot. Enable them, choose View Statistics, and use up/down to browse six pages. Counters and maximum durations are held in RAM only. Clear Statistics resets the measurement window without changing the selected mode. The test mode cycles through normal recording, no detailed SD log (CSV continues),and paused SD reception recording (including onboard CSV). Mode changes clear the statistics so different conditions are not mixed. Pausing does not change persistent recording settings, suppress reception, or mark storage as failed. Returning from the statistics pages keeps the diagnostic session active; returning from the diagnostic menu or holding Back to leave the menus stops it and restores normal recording at the next completed-record boundary, so an in-flight CSV cannot be split across modes.
 
-The raw buffer counters measure actual sync detections, newest-byte drops on full buffer,
-and unread bytes cleared by a new sync. These are not a count of lost trains, nor a
-complete measurement of all possible corruption. Peak buffer occupancy is captured
-at byte completion; busy occupancy/growth is sampled by the main loop and can miss
-short peaks. Timing pages report maximum raw decode, field parse, individual log/CSV
-write (including flush/fsync), ride write, and formatted-output task duration. Failed
-reads include the last RadioLib error code; damaged batches include X/uncorrected
-markers. Serial/network output and normal display remain enabled in all three modes.
+The raw buffer counters measure actual sync detections, newest-byte drops on full buffer, and unread bytes cleared by a new sync. These are not a count of lost trains, nor a complete measurement of all possible corruption. Peak buffer occupancy is captured
+at byte completion; busy occupancy/growth is sampled by the main loop and can miss short peaks. Timing pages report maximum raw decode, field parse, individual log/CSV write (including flush/fsync), ride write, and formatted-output task duration. Failed reads include the last RadioLib error code; damaged batches include X/uncorrected markers. Serial/network output and normal display remain enabled in all three modes.
 
-The 256-byte direct receive FIFO uses separate read/write positions and a count
-that can represent 256. When full, new bytes are discarded instead of overwriting
-unread bytes; diagnostics show the discarded-byte count (满缓冲丢弃). ISR and
-main-loop FIFO access are serialized on ESP32. New synchronization keeps the
-existing behavior of clearing previous unread data and records its count.
-Deferred diagnostic exit is processed before starting the next batch, including
-when a continuous backlog exists. These bounds prevent silent overwrite but do
-not promise lossless reception if input outpaces processing indefinitely.
+The 256-byte direct receive FIFO uses separate read/write positions and a count that can represent 256. When full, new bytes are discarded instead of overwriting unread bytes; diagnostics show the discarded-byte count. ISR and main-loop FIFO access are serialized on ESP32. New synchronization keeps the existing behavior of clearing previous unread data and records its count. Deferred diagnostic exit is processed before starting the next batch, including when a continuous backlog exists. These bounds prevent silent overwrite but do not promise lossless reception if input outpaces processing indefinitely.
